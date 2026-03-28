@@ -15,6 +15,8 @@ This package is focused on the practical workflow:
 
 `custom WAV -> rebuilt PS2 musicXXX.bgm + waveXXXX.wd`
 
+Music Tracks Locations: https://docs.google.com/spreadsheets/d/1JMAhUSeEf3r-njF2-8EBX8mUDVa0xaLs/edit#gid=1851343023
+
 ## Included Files
 
 - `BGMInfo.exe`
