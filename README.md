@@ -15,6 +15,8 @@ This package is focused on the practical workflow:
 
 `custom WAV -> rebuilt PS2 musicXXX.bgm + waveXXXX.wd`
 
+Music Tracks Locations: https://docs.google.com/spreadsheets/d/1JMAhUSeEf3r-njF2-8EBX8mUDVa0xaLs/edit#gid=1851343023
+
 ## Included Files
 
 - `BGMInfo.exe`
@@ -131,6 +133,26 @@ This is currently supported from:
 - WAV `id3` metadata with `TXXX` tags named `LoopStart` and `LoopEnd`
 
 The loop values must be stored as sample positions.
+
+## How to Input Loops
+
+Full Loop:
+
+WAV must have LoopStart and LoopEnd tags
+
+LoopStart must be equal to 0
+
+LoopEnd must be equal to the last sample of the WAV.
+
+Custom Loop:
+
+WAV must have LoopStart and LoopEnd tags
+
+LoopEnd must be equal to the last sample of the WAV.
+
+No Loop:
+
+WAV must not have LoopStart and LoopEnd tags.
 
 ## Quick Start
 
