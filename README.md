@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.4.0`
+Version: `v0.5.2`
 
 `BGMPS2Tool` is a small Windows tool package for replacing `Kingdom Hearts II Final Mix` PS2 music tracks.
 
@@ -15,8 +15,6 @@ This package is focused on the practical workflow:
 
 `custom WAV -> rebuilt PS2 musicXXX.bgm + waveXXXX.wd`
 
-Music Tracks Locations: https://docs.google.com/spreadsheets/d/1JMAhUSeEf3r-njF2-8EBX8mUDVa0xaLs/edit#gid=1851343023
-
 ## Included Files
 
 - `BGMInfo.exe`
@@ -26,6 +24,7 @@ Music Tracks Locations: https://docs.google.com/spreadsheets/d/1JMAhUSeEf3r-njF2
 - `KhPs2Audio.Shared.dll`
 - `KhPs2Audio.Shared.deps.json`
 - `BGMReplaceWav.bat`
+- `config.ini`
 - `README.md`
 - `HOWTO.md`
 - `CHANGELOG.md`
@@ -53,6 +52,51 @@ Important:
 - Keep all files from `BGMPS2Tool` together in the same folder.
 - If `BGMInfo.exe` does not start, the most likely cause is a missing `.NET 10` Runtime.
 
+## Configuration
+
+The tool reads:
+
+- `config.ini`
+
+from the same folder as `BGMInfo.exe`.
+
+Supported options:
+
+- `volume=1.0`
+- `hold_minutes=60`
+
+### `volume`
+
+- default: `1.0`
+- multiplies the input WAV loudness before PS2 encoding
+- lower than `1.0` makes the result quieter
+- higher than `1.0` makes the result louder
+
+Example:
+
+```ini
+volume=1.15
+```
+
+### `hold_minutes`
+
+- default: `60`
+- controls the minimum note hold time for looped tracks
+- mainly relevant when a rebuilt track uses imported loop metadata
+- lower values can cause the note to be released earlier
+- higher values keep the note active longer
+
+Example:
+
+```ini
+hold_minutes=45
+```
+
+Safe range used by the tool:
+
+- minimum: `0.1`
+- maximum: `600`
+
 ## What The Tool Does
 
 When you give the tool a WAV like `music188.ps2.wav`, it will:
@@ -72,6 +116,7 @@ When you give the tool a WAV like `music188.ps2.wav`, it will:
 - If the original PS2 `WD` budget is small, the tool may reduce the replacement audio quality to fit the original track size.
 - Long replacement songs may be downmixed to mono to stay within the original PS2 memory budget.
 - If the WAV contains loop metadata, the tool can import that loop for the rebuilt PS2 track.
+- `config.ini` can be used to adjust loudness and loop hold time without changing code.
 
 ## Supported Loop Metadata
 
@@ -86,26 +131,6 @@ This is currently supported from:
 - WAV `id3` metadata with `TXXX` tags named `LoopStart` and `LoopEnd`
 
 The loop values must be stored as sample positions.
-
-## How to Input Loops
-
-Full Loop:
-
-WAV must have LoopStart and LoopEnd tags
-
-LoopStart must be equal to 0
-
-LoopEnd must be equal to the last sample of the WAV.
-
-Custom Loop:
-
-WAV must have LoopStart and LoopEnd tags
-
-LoopEnd must be equal to the last sample of the WAV.
-
-No Loop:
-
-WAV must not have LoopStart and LoopEnd tags.
 
 ## Quick Start
 

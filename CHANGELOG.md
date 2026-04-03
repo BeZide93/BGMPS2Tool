@@ -1,5 +1,44 @@
 # CHANGELOG
 
+## v0.5.2 - 2026-04-04
+
+### Added
+
+- `hold_minutes` setting in `config.ini`
+
+### Changed
+
+- loop note hold time can now be adjusted without code changes
+
+## v0.5.1 - 2026-04-04
+
+### Changed
+
+- removed the `size` setting from `config.ini`
+- `volume` remains the only supported user-facing configuration option
+
+### Fixed
+
+- prevented incompatible rebuilds caused by manual `WD` size scaling
+
+## v0.5.0 - 2026-04-03
+
+### Added
+
+- `config.ini` support in the tool folder
+- `volume` option for scaling imported WAV loudness before PS2 encoding
+- `size` option for scaling the rebuilt `WD` sample budget
+
+### Changed
+
+- rebuilt `WD` output size can now be controlled without code changes
+- package documentation now explains the new configuration options
+
+### Notes
+
+- `size > 1.0` can improve quality by allowing a larger `waveXXXX.wd`
+- `size > 1.0` can also increase compatibility risk because the rebuilt `WD` may exceed the original size
+
 ## v0.4.0 - 2026-03-28
 
 ### Added

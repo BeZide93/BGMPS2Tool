@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.4.0`
+Version: `v0.5.2`
 
 ## Goal
 
@@ -12,6 +12,49 @@ Replace a PS2 `KH2FM` music track with your own WAV.
 - Microsoft `.NET 10` Runtime
 
 No other external tools are required for this package.
+
+## Optional Configuration
+
+Edit:
+
+```text
+config.ini
+```
+
+inside the `BGMPS2Tool` folder.
+
+Available settings:
+
+```ini
+volume=1.0
+hold_minutes=60
+```
+
+Meaning:
+
+- `volume`: loudness multiplier for the imported WAV
+- `hold_minutes`: minimum note hold time for looped tracks
+
+Examples:
+
+```ini
+volume=0.90
+```
+
+```ini
+volume=1.10
+```
+
+```ini
+hold_minutes=45
+```
+
+Notes:
+
+- `hold_minutes` is mainly useful for looped music imports
+- lower values can make a looped track stop too early
+- higher values keep the playback note alive longer
+- allowed range: `0.1` to `600`
 
 ## Example
 
