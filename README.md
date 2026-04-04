@@ -1,21 +1,18 @@
 # BGMPS2Tool
 
-Version: `v0.5.2`
+Version: `v0.6.0`
 
-`BGMPS2Tool` is a small Windows tool package for replacing `Kingdom Hearts II Final Mix` PS2 music tracks.
+`BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
-It converts a custom `.wav` into a new PS2-compatible:
+It currently supports two workflows:
 
-- `.bgm`
-- `.wd`
+- `WAV -> rebuilt PS2 musicXXX.bgm + waveXXXX.wd`
+- `MIDI + SF2 -> rebuilt PS2 musicXXX.bgm + waveXXXX.wd`
 
-pair for the matching track slot.
+The new MIDI/SF2 workflow is cleaner than the legacy long-note workaround because it authors:
 
-This package is focused on the practical workflow:
-
-`custom WAV -> rebuilt PS2 musicXXX.bgm + waveXXXX.wd`
-
-Music Tracks Locations: https://docs.google.com/spreadsheets/d/1JMAhUSeEf3r-njF2-8EBX8mUDVa0xaLs/edit#gid=1851343023
+- a real PS2 `WD` instrument bank from the SoundFont
+- a real PS2 `BGM` sequence from the MIDI
 
 ## Included Files
 
@@ -26,6 +23,7 @@ Music Tracks Locations: https://docs.google.com/spreadsheets/d/1JMAhUSeEf3r-njF2
 - `KhPs2Audio.Shared.dll`
 - `KhPs2Audio.Shared.deps.json`
 - `BGMReplaceWav.bat`
+- `BGMReplaceMidiSf2.bat`
 - `config.ini`
 - `README.md`
 - `HOWTO.md`
@@ -64,42 +62,18 @@ from the same folder as `BGMInfo.exe`.
 
 Supported options:
 
-- `volume=1.0`
-- `hold_minutes=60`
+- `volume=...`
+- `hold_minutes=...`
 
-### `volume`
+Notes:
 
-- default: `1.0`
-- multiplies the input WAV loudness before PS2 encoding
-- lower than `1.0` makes the result quieter
-- higher than `1.0` makes the result louder
-
-Example:
-
-```ini
-volume=1.15
-```
-
-### `hold_minutes`
-
-- default: `60`
-- controls the minimum note hold time for looped tracks
-- mainly relevant when a rebuilt track uses imported loop metadata
-- lower values can cause the note to be released earlier
-- higher values keep the note active longer
-
-Example:
-
-```ini
-hold_minutes=45
-```
-
-Safe range used by the tool:
-
-- minimum: `0.1`
-- maximum: `600`
+- `volume` applies to imported WAVs and to SoundFont sample audio before PS2 encoding.
+- `hold_minutes` is mainly relevant to the older `replacewav` loop workflow.
+- `hold_minutes` does not drive the actual note lengths in the MIDI/SF2 workflow, because those come from the MIDI sequence itself.
 
 ## What The Tool Does
+
+### WAV workflow
 
 When you give the tool a WAV like `music188.ps2.wav`, it will:
 
@@ -108,84 +82,55 @@ When you give the tool a WAV like `music188.ps2.wav`, it will:
 3. Build a new replacement pair
 4. Write the result into an `output` folder next to the WAV
 
+### MIDI + SF2 workflow
+
+When you give the tool a MIDI like `music188.mid`, it will:
+
+1. Find `music188.bgm` in the same folder
+2. Find the matching `wave0188.wd` in the same folder
+3. Find `wave0188.sf2` in the same folder
+4. Convert the SoundFont into a new PS2 `WD` bank
+5. Convert the MIDI into a new PS2 `BGM` sequence
+6. Write the result into an `output` folder next to the MIDI
+
 ## Important Notes
 
 - This tool is made for PS2 `KH2FM` music replacement.
-- The input WAV must be a `16-bit PCM WAV`.
-- The WAV must be placed next to the original matching `musicXXX.bgm` and `waveXXXX.wd`.
+- The WAV workflow still expects a `16-bit PCM WAV`.
+- The MIDI/SF2 workflow expects a standard `.mid` and `.sf2`.
+- The original matching `musicXXX.bgm` and `waveXXXX.wd` must still be present next to the inputs.
 - The new files are written to `output`, so the original files stay untouched.
-- For compatibility, the tool keeps the original PS2 container structure as much as possible.
-- If the original PS2 `WD` budget is small, the tool may reduce the replacement audio quality to fit the original track size.
-- Long replacement songs may be downmixed to mono to stay within the original PS2 memory budget.
-- If the WAV contains loop metadata, the tool can import that loop for the rebuilt PS2 track.
-- `config.ini` can be used to adjust loudness and loop hold time without changing code.
-
-## Supported Loop Metadata
-
-The tool supports loop points when the WAV contains:
-
-- `LoopStart`
-- `LoopEnd`
-
-This is currently supported from:
-
-- RIFF `smpl` loop data
-- WAV `id3` metadata with `TXXX` tags named `LoopStart` and `LoopEnd`
-
-The loop values must be stored as sample positions.
-
-## How to Input Loops
-
-Full Loop:
-
-WAV must have LoopStart and LoopEnd tags
-
-LoopStart must be equal to 0
-
-LoopEnd must be equal to the last sample of the WAV.
-
-Custom Loop:
-
-WAV must have LoopStart and LoopEnd tags
-
-LoopEnd must be equal to the last sample of the WAV.
-
-No Loop:
-
-WAV must not have LoopStart and LoopEnd tags.
+- For compatibility, the tool keeps the original PS2 header/container identity where practical, but the authored sequence/bank data is rebuilt.
+- The current SoundFont importer ignores some advanced SF2 features such as filter/LFO/modulator behavior.
+- The current MIDI importer ignores pitch-bend because the KH2 PS2 pitch opcode mapping is still unknown.
 
 ## Quick Start
 
-Use the drag-and-drop batch:
+WAV workflow:
 
-`BGMReplaceWav.bat`
+- `BGMReplaceWav.bat`
+- `BGMInfo.exe replacewav "C:\Path\To\music188.ps2.wav"`
 
-or use the command line:
+MIDI/SF2 workflow:
 
-```powershell
-.\BGMInfo.exe replacewav "C:\Path\To\music188.ps2.wav"
-```
+- `BGMReplaceMidiSf2.bat`
+- `BGMInfo.exe replacemidi "C:\Path\To\music188.mid"`
+- `BGMInfo.exe replacemidi "C:\Path\To\music188.mid" "C:\Path\To\wave0188.sf2"`
 
 ## Output
 
 For an input like:
 
-- `music188.ps2.wav`
+- `music188.mid`
 - `music188.bgm`
 - `wave0188.wd`
+- `wave0188.sf2`
 
 the tool will create:
 
 - `output\music188.bgm`
 - `output\wave0188.wd`
-
-## Recommended Workflow
-
-1. Keep one folder per track.
-2. Put the original `musicXXX.bgm` and `waveXXXX.wd` into that folder.
-3. Put your replacement WAV in the same folder.
-4. Drag the WAV onto `BGMReplaceWav.bat`.
-5. Test the files from the `output` folder ingame.
+- `output\music188.mid-sf2-manifest.json`
 
 ## Release Notes
 

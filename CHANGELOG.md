@@ -1,5 +1,79 @@
 # CHANGELOG
 
+## v0.6.5 - 2026-04-04
+
+### Changed
+
+- MIDI `CC7` volume and `CC11` expression are now authored to the PS2 path with a stronger concave attenuation curve instead of being copied linearly
+
+### Fixed
+
+- reduced cases where quieter background channels stayed too far forward in the rebuilt PS2 mix
+- reduced cases where hiss-like or noisy secondary layers became too prominent compared to the main arrangement
+
+## v0.6.4 - 2026-04-04
+
+### Changed
+
+- SoundFont `reverb send` is now interpreted during `MIDI + SF2 -> BGM + WD` conversion and used to rebalance overly dry background layers
+
+### Fixed
+
+- removed the stale `Ignored SoundFont generator 16 during conversion` warning from current rebuilds
+- reduced cases where reverb-heavy background layers sounded too forward or too dry in the rebuilt PS2 mix
+
+## v0.6.3 - 2026-04-04
+
+### Changed
+
+- SoundFont velocity-zone selection now follows the actual note velocities used by the MIDI instead of always resolving zones around a fixed reference velocity of `100`
+
+### Fixed
+
+- reduced cases where sharper or noisier high-velocity SoundFont layers became too dominant in the rebuilt PS2 mix
+
+## v0.6.2 - 2026-04-04
+
+### Changed
+
+- SoundFont sample-rate differences are now compensated in the authored PS2 root-note tuning instead of being treated like native `44.1 kHz` material
+
+### Fixed
+
+- reduced the global "too high" pitch shift that could happen with lower-rate SF2 source samples
+- improved low-end retention for instruments whose original SoundFont samples were authored below `44.1 kHz`
+
+## v0.6.1 - 2026-04-04
+
+### Changed
+
+- SoundFont volume-envelope generators now map into authored PS2 `WD` ADSR values instead of using one fixed fallback envelope for every region
+- linked stereo SoundFont samples are now preserved as layered stereo `WD` regions instead of being folded down to mono during conversion
+
+### Fixed
+
+- removed the old false-positive warnings for ignored SoundFont generators `34..38`
+- improved source-timbre retention for `MIDI + SF2 -> BGM + WD` rebuilds
+
+## v0.6.0 - 2026-04-04
+
+### Added
+
+- real `MIDI + SF2 -> BGM + WD` conversion path
+- `BGMInfo replacemidi <InputMid> [InputSf2]`
+- `BGMReplaceMidiSf2.bat`
+- conversion manifest output for MIDI/SF2 rebuilds
+
+### Changed
+
+- `BGMPS2Tool` now supports both the legacy WAV workflow and the cleaner MIDI/SF2 workflow
+- `volume` from `config.ini` now also applies to SoundFont sample audio before PS2 encoding
+
+### Notes
+
+- the MIDI/SF2 workflow currently ignores advanced SoundFont modulators, filters, and LFO behavior
+- MIDI pitch-bend is currently ignored because the KH2 PS2 pitch opcode mapping is still unknown
+
 ## v0.5.2 - 2026-04-04
 
 ### Added

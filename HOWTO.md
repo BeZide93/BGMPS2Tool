@@ -1,10 +1,13 @@
 # HOWTO
 
-Version: `v0.5.2`
+Version: `v0.6.0`
 
 ## Goal
 
-Replace a PS2 `KH2FM` music track with your own WAV.
+Replace a PS2 `KH2FM` music track either:
+
+- with a custom WAV
+- or with a proper MIDI + SoundFont pair
 
 ## Requirements
 
@@ -32,44 +35,18 @@ hold_minutes=60
 
 Meaning:
 
-- `volume`: loudness multiplier for the imported WAV
-- `hold_minutes`: minimum note hold time for looped tracks
-
-Examples:
-
-```ini
-volume=0.90
-```
-
-```ini
-volume=1.10
-```
-
-```ini
-hold_minutes=45
-```
+- `volume`: loudness multiplier for imported WAVs and SoundFont sample audio
+- `hold_minutes`: minimum note hold time for looped `replacewav` builds
 
 Notes:
 
-- `hold_minutes` is mainly useful for looped music imports
-- lower values can make a looped track stop too early
-- higher values keep the playback note alive longer
-- allowed range: `0.1` to `600`
+- `hold_minutes` mainly affects the older WAV replacement path
+- MIDI/SF2 note lengths come from the MIDI itself
+- allowed `hold_minutes` range: `0.1` to `600`
 
-## Example
+## Method 1: WAV Replacement
 
-You want to replace:
-
-- `music188.bgm`
-- `wave0188.wd`
-
-with your custom song:
-
-- `music188.ps2.wav`
-
-## Folder Layout
-
-Put these files in the same folder:
+Example input files in one folder:
 
 ```text
 music188.bgm
@@ -77,104 +54,89 @@ wave0188.wd
 music188.ps2.wav
 ```
 
-`BGMPS2Tool` itself can stay in its own folder anywhere on your PC.
+Then:
 
-## Method 1: Drag And Drop
+1. drag `music188.ps2.wav` onto `BGMReplaceWav.bat`
+2. or run:
 
-1. Open the `BGMPS2Tool` folder.
-2. Drag `music188.ps2.wav` onto `BGMReplaceWav.bat`.
-3. Wait until the process is finished.
+```powershell
+.\BGMInfo.exe replacewav "C:\Path\To\music188.ps2.wav"
+```
 
-The tool will create:
+Output:
 
 ```text
 output\music188.bgm
 output\wave0188.wd
 ```
 
-inside the folder where your WAV is stored.
+## Method 2: MIDI + SF2 Replacement
 
-## Method 2: Command Line
+Example input files in one folder:
 
-Open PowerShell in the `BGMPS2Tool` folder and run:
+```text
+music188.bgm
+wave0188.wd
+music188.mid
+wave0188.sf2
+```
+
+Then:
+
+1. drag `music188.mid` onto `BGMReplaceMidiSf2.bat`
+2. or run:
 
 ```powershell
-.\BGMInfo.exe replacewav "C:\Path\To\music188.ps2.wav"
+.\BGMInfo.exe replacemidi "C:\Path\To\music188.mid"
+```
+
+If the SoundFont is not next to the MIDI under the expected `waveXXXX.sf2` name, use:
+
+```powershell
+.\BGMInfo.exe replacemidi "C:\Path\To\music188.mid" "C:\Path\To\wave0188.sf2"
+```
+
+Output:
+
+```text
+output\music188.bgm
+output\wave0188.wd
+output\music188.mid-sf2-manifest.json
 ```
 
 ## Naming Rules
 
-The WAV filename must allow the tool to find the matching PS2 music file.
-
 Recommended names:
 
-- `music188.wav`
 - `music188.ps2.wav`
-- `music059.wav`
-- `music059.ps2.wav`
+- `music188.mid`
+- `wave0188.sf2`
+
+The tool uses the input name to find the matching `musicXXX.bgm` and `waveXXXX.wd`.
 
 ## Input Rules
+
+### WAV path
 
 Your WAV should be:
 
 - `16-bit PCM`
 - a standard `.wav` file
 
-If your WAV comes from a DAW, export it as `16-bit PCM WAV`.
+### MIDI/SF2 path
 
-## Optional Loop Metadata
+Your files should be:
 
-If your WAV includes loop metadata, the tool can import it.
-
-Supported loop sources:
-
-- WAV `smpl` loop chunk
-- WAV `id3` `TXXX` tags:
-  - `LoopStart`
-  - `LoopEnd`
-
-The values must be stored in samples.
-
-If loop metadata is present, the rebuilt PS2 music will try to use that loop instead of playing only once.
-
-## Output Rules
-
-The tool does not overwrite the originals.
-
-It writes the rebuilt files into:
-
-```text
-output
-```
-
-next to the input WAV.
+- a standard `.mid`
+- a standard `.sf2`
 
 ## Compatibility Notes
 
-- The tool tries to preserve the original PS2 `BGM` and `WD` structure.
-- If the original track has a small memory budget, the replacement audio may be resampled to fit.
-- Some tracks may end up mono instead of stereo if that is required for PS2 compatibility.
-- Always test the files ingame after rebuilding.
-
-## Typical Full Example
-
-Input folder:
-
-```text
-D:\KH2\music188\
-  music188.bgm
-  wave0188.wd
-  music188.ps2.wav
-```
-
-After processing:
-
-```text
-D:\KH2\music188\
-  output\
-    music188.bgm
-    wave0188.wd
-```
+- The MIDI/SF2 workflow is more structured than the long-note WAV workaround.
+- The current SoundFont importer converts presets, regions, key ranges, tuning, volume, pan, and loops.
+- Advanced SF2 features such as modulators, filters, and LFO behavior are currently ignored.
+- MIDI pitch-bend is currently ignored.
+- Always test rebuilt files ingame after conversion.
 
 ## Troubleshooting
 
@@ -182,14 +144,14 @@ D:\KH2\music188\
 
 Install the Microsoft `.NET 10` Runtime and keep all package files together in the same `BGMPS2Tool` folder.
 
-### "No matching .bgm was found next to the WAV"
+### "No matching .bgm was found next to the MIDI/WAV"
 
-Make sure the WAV is in the same folder as the correct `musicXXX.bgm`.
+Make sure the input file is in the same folder as the correct `musicXXX.bgm`.
 
-### The game crashes or freezes
+### "No matching .sf2 was found"
 
-Use the files from the `output` folder only.
+Place `waveXXXX.sf2` next to the MIDI, or call `replacemidi` with the SoundFont path explicitly.
 
-### The music starts but sounds different from the source WAV
+### The result sounds different from the original SF2 playback
 
-That can happen because PS2 tracks have limited audio memory and the tool may need to reduce the sample rate to fit the original track budget.
+That can happen because KH2 PS2 `WD` is simpler than full SoundFont behavior. The current converter focuses on practical ingame compatibility first.
