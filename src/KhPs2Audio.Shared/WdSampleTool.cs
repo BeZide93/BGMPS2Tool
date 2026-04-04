@@ -580,6 +580,8 @@ internal static class PsxAdpcmEncoder
 {
     private static readonly int[] Coefficients0 = [0, 60, 115, 98, 122];
     private static readonly int[] Coefficients1 = [0, 0, -52, -55, -60];
+    private const int LookaheadCandidateCount = 4;
+    private const double LookaheadWeight = 0.6;
 
     public static byte[] Encode(short[] pcmSamples, bool looping, int loopStartBytes)
     {
@@ -589,15 +591,18 @@ internal static class PsxAdpcmEncoder
         var previous2 = 0;
 
         Span<int> source = stackalloc int[28];
+        Span<int> nextSource = stackalloc int[28];
         for (var blockIndex = 0; blockIndex < blockCount; blockIndex++)
         {
-            for (var i = 0; i < 28; i++)
+            LoadBlock(pcmSamples, blockIndex, source);
+
+            var hasNextBlock = blockIndex + 1 < blockCount;
+            if (hasNextBlock)
             {
-                var sampleIndex = (blockIndex * 28) + i;
-                source[i] = sampleIndex < pcmSamples.Length ? pcmSamples[sampleIndex] : 0;
+                LoadBlock(pcmSamples, blockIndex + 1, nextSource);
             }
 
-            var block = EncodeBlock(source, previous1, previous2);
+            var block = EncodeBlock(source, hasNextBlock ? nextSource : [], previous1, previous2);
             previous1 = block.LastSample1;
             previous2 = block.LastSample2;
 
@@ -624,22 +629,93 @@ internal static class PsxAdpcmEncoder
         return output;
     }
 
-    private static EncodedPsxBlock EncodeBlock(ReadOnlySpan<int> source, int previous1, int previous2)
+    private static void LoadBlock(short[] pcmSamples, int blockIndex, Span<int> destination)
     {
+        for (var i = 0; i < 28; i++)
+        {
+            var sampleIndex = (blockIndex * 28) + i;
+            destination[i] = sampleIndex < pcmSamples.Length ? pcmSamples[sampleIndex] : 0;
+        }
+    }
+
+    private static EncodedPsxBlock EncodeBlock(ReadOnlySpan<int> source, ReadOnlySpan<int> nextSource, int previous1, int previous2)
+    {
+        var candidates = GetBestLocalCandidates(source, previous1, previous2);
+        var primaryCandidate = candidates[0] ?? throw new InvalidOperationException("Failed to encode PSX ADPCM block.");
+        if (nextSource.Length == 0)
+        {
+            return primaryCandidate;
+        }
+
         EncodedPsxBlock? best = null;
+        double bestScore = double.MaxValue;
+        foreach (var candidate in candidates)
+        {
+            if (candidate is null)
+            {
+                continue;
+            }
+
+            var score = candidate.Error + (FindBestNextError(nextSource, candidate.LastSample1, candidate.LastSample2) * LookaheadWeight);
+            if (best is null || score < bestScore)
+            {
+                best = candidate;
+                bestScore = score;
+            }
+        }
+
+        return best ?? throw new InvalidOperationException("Failed to encode PSX ADPCM block.");
+    }
+
+    private static EncodedPsxBlock?[] GetBestLocalCandidates(ReadOnlySpan<int> source, int previous1, int previous2)
+    {
+        var bestCandidates = new EncodedPsxBlock?[LookaheadCandidateCount];
         for (var filter = 0; filter <= 4; filter++)
         {
             for (var shift = 0; shift <= 12; shift++)
             {
                 var candidate = TryEncodeBlock(source, previous1, previous2, filter, shift);
-                if (best is null || candidate.Error < best.Error)
+                InsertCandidate(bestCandidates, candidate);
+            }
+        }
+
+        return bestCandidates;
+    }
+
+    private static long FindBestNextError(ReadOnlySpan<int> source, int previous1, int previous2)
+    {
+        long bestError = long.MaxValue;
+        for (var filter = 0; filter <= 4; filter++)
+        {
+            for (var shift = 0; shift <= 12; shift++)
+            {
+                var candidate = TryEncodeBlock(source, previous1, previous2, filter, shift);
+                if (candidate.Error < bestError)
                 {
-                    best = candidate;
+                    bestError = candidate.Error;
                 }
             }
         }
 
-        return best ?? throw new InvalidOperationException("Failed to encode PSX ADPCM block.");
+        return bestError;
+    }
+
+    private static void InsertCandidate(EncodedPsxBlock?[] candidates, EncodedPsxBlock candidate)
+    {
+        for (var index = 0; index < candidates.Length; index++)
+        {
+            var existing = candidates[index];
+            if (existing is null || candidate.Error < existing.Error)
+            {
+                for (var shiftIndex = candidates.Length - 1; shiftIndex > index; shiftIndex--)
+                {
+                    candidates[shiftIndex] = candidates[shiftIndex - 1];
+                }
+
+                candidates[index] = candidate;
+                return;
+            }
+        }
     }
 
     private static EncodedPsxBlock TryEncodeBlock(ReadOnlySpan<int> source, int previous1, int previous2, int filter, int shift)
@@ -650,17 +726,20 @@ internal static class PsxAdpcmEncoder
         var sample2 = previous2;
         var payload = new byte[14];
         long error = 0;
+        double feedbackError = 0;
 
         for (var index = 0; index < 28; index++)
         {
             var prediction = ((coef0 * sample1) + (coef1 * sample2)) >> 6;
-            var scaled = (source[index] - prediction) * (1 << shift) / 4096.0;
+            var target = source[index] + (feedbackError * 0.75);
+            var scaled = (target - prediction) * (1 << shift) / 4096.0;
             var nibble = (int)Math.Round(scaled, MidpointRounding.AwayFromZero);
             nibble = Math.Clamp(nibble, -8, 7);
 
             var reconstructed = ((nibble << 12) >> shift) + prediction;
             reconstructed = Math.Clamp(reconstructed, short.MinValue, short.MaxValue);
             var delta = source[index] - reconstructed;
+            feedbackError = delta;
             error += (long)delta * delta;
 
             var packedNibble = nibble & 0x0F;
@@ -708,13 +787,7 @@ internal static class WaveReader
             return pcm.Left;
         }
 
-        var mono = new short[pcm.Left.Length];
-        for (var i = 0; i < mono.Length; i++)
-        {
-            mono[i] = (short)Math.Clamp((pcm.Left[i] + pcm.Right[i]) / 2, short.MinValue, short.MaxValue);
-        }
-
-        return mono;
+        return AudioDsp.MixToMono(pcm.Left, pcm.Right, pcm.SampleRate);
     }
 
     public static WavePcmData ReadStereoPcm16(string path)
@@ -815,8 +888,8 @@ internal static class WaveReader
                 loopPoints?.EndSample);
         }
 
-        var resampledLeft = ResampleMono(left, sampleRate, TargetSampleRate);
-        var resampledRight = ResampleMono(right, sampleRate, TargetSampleRate);
+        var resampledLeft = AudioDsp.ResampleMono(left, sampleRate, TargetSampleRate);
+        var resampledRight = AudioDsp.ResampleMono(right, sampleRate, TargetSampleRate);
         WaveLoopPoints? resampledLoop = null;
         if (loopPoints is not null)
         {
@@ -883,28 +956,6 @@ internal static class WaveReader
 
         return Math.Abs(endAsTargetSeconds - fileDurationSeconds) <= 0.05 &&
                Math.Abs(endAsInputSeconds - fileDurationSeconds) >= 0.5;
-    }
-
-    private static short[] ResampleMono(short[] input, int sourceRate, int targetRate)
-    {
-        if (input.Length == 0)
-        {
-            return [];
-        }
-
-        var outputLength = Math.Max(1, (int)Math.Round(input.Length * (targetRate / (double)sourceRate), MidpointRounding.AwayFromZero));
-        var output = new short[outputLength];
-        for (var i = 0; i < outputLength; i++)
-        {
-            var position = i * (sourceRate / (double)targetRate);
-            var index0 = Math.Min((int)position, input.Length - 1);
-            var index1 = Math.Min(index0 + 1, input.Length - 1);
-            var fraction = position - index0;
-            var sample = input[index0] + ((input[index1] - input[index0]) * fraction);
-            output[i] = (short)Math.Clamp(Math.Round(sample, MidpointRounding.AwayFromZero), short.MinValue, short.MaxValue);
-        }
-
-        return output;
     }
 
     private static WaveLoopPoints? TryParseSmplLoop(byte[] chunk)

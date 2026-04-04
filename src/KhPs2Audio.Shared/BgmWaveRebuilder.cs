@@ -360,7 +360,7 @@ public static class BgmWaveRebuilder
     {
         var sourceChannels = useStereo
             ? new[] { wave.Left, wave.Right }
-            : new[] { MixToMono(wave.Left, wave.Right) };
+            : new[] { AudioDsp.MixToMono(wave.Left, wave.Right, wave.SampleRate) };
 
         var sourceLoop = NormalizeLoopPoints(wave, sourceChannels[0].Length);
         var durationSamples = sourceLoop?.EndSample ?? sourceChannels[0].Length;
@@ -380,7 +380,7 @@ public static class BgmWaveRebuilder
         for (var candidateRate = estimatedRate; candidateRate >= 4_000; candidateRate--)
         {
             var resampledChannels = sourceChannels
-                .Select(channel => ResampleChannel(channel, wave.SampleRate, candidateRate))
+                .Select(channel => AudioDsp.ResampleMono(channel, wave.SampleRate, candidateRate))
                 .ToArray();
             WaveLoopPoints? resampledLoop = null;
             if (sourceLoop is not null)
@@ -439,44 +439,6 @@ public static class BgmWaveRebuilder
     private static int SamplesToLoopStartBytes(int loopStartSample)
     {
         return Math.Max(0, (loopStartSample / 28) * 0x10);
-    }
-
-    private static short[] MixToMono(short[] left, short[] right)
-    {
-        var mono = new short[Math.Min(left.Length, right.Length)];
-        for (var i = 0; i < mono.Length; i++)
-        {
-            mono[i] = (short)Math.Clamp((left[i] + right[i]) / 2, short.MinValue, short.MaxValue);
-        }
-
-        return mono;
-    }
-
-    private static short[] ResampleChannel(short[] input, int sourceRate, int targetRate)
-    {
-        if (input.Length == 0)
-        {
-            return [];
-        }
-
-        if (sourceRate == targetRate)
-        {
-            return (short[])input.Clone();
-        }
-
-        var outputLength = Math.Max(1, (int)Math.Round(input.Length * (targetRate / (double)sourceRate), MidpointRounding.AwayFromZero));
-        var output = new short[outputLength];
-        for (var i = 0; i < outputLength; i++)
-        {
-            var position = i * (sourceRate / (double)targetRate);
-            var index0 = Math.Min((int)position, input.Length - 1);
-            var index1 = Math.Min(index0 + 1, input.Length - 1);
-            var fraction = position - index0;
-            var sample = input[index0] + ((input[index1] - input[index0]) * fraction);
-            output[i] = (short)Math.Clamp(Math.Round(sample, MidpointRounding.AwayFromZero), short.MinValue, short.MaxValue);
-        }
-
-        return output;
     }
 
     private static WavePcmData ApplyVolume(WavePcmData wave, double volume)

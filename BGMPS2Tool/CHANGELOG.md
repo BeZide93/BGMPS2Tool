@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## v0.6.8 - 2026-04-04
+
+### Changed
+
+- improved the `WAV -> BGM + WD` replacement path with a better downsampling chain, a more phase-robust mono downmix, and a higher-quality PSX ADPCM block search
+
+### Fixed
+
+- reduced the thin, metallic, or brittle character that could appear in long music replacements when they had to fit a tight original PS2 `WD` budget
+
 ## v0.6.7 - 2026-04-04
 
 ### Changed

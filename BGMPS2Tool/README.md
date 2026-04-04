@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.6.7`
+Version: `v0.6.8`
 
 `BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
