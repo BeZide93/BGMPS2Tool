@@ -2,6 +2,30 @@ namespace KhPs2Audio.Shared;
 
 internal static class AudioDsp
 {
+    public static short[] ApplyPreEncodeConditioning(short[] input, int sampleRate, double preEqStrength, double preLowPassHz)
+    {
+        if (input.Length == 0)
+        {
+            return [];
+        }
+
+        var output = (short[])input.Clone();
+        if (preEqStrength > 0.0001)
+        {
+            var clampedStrength = Math.Clamp(preEqStrength, 0.0, 1.0);
+            output = ApplyLowShelf(output, sampleRate, 140.0, 1.2 * clampedStrength);
+            output = ApplyPeakingEq(output, sampleRate, 3400.0, 0.85, -2.2 * clampedStrength);
+            output = ApplyHighShelf(output, sampleRate, 7200.0, -3.5 * clampedStrength);
+        }
+
+        if (preLowPassHz > 20.0)
+        {
+            output = ApplyLowPass(output, sampleRate, preLowPassHz);
+        }
+
+        return output;
+    }
+
     public static short[] MixToMono(short[] left, short[] right, int sampleRate)
     {
         var length = Math.Min(left.Length, right.Length);
@@ -89,6 +113,39 @@ internal static class AudioDsp
         return ApplyBiquadLowPass(firstPass, sampleRate, cutoffHz, q);
     }
 
+    private static short[] ApplyLowShelf(short[] input, int sampleRate, double cutoffHz, double gainDb)
+    {
+        if (Math.Abs(gainDb) < 0.0001)
+        {
+            return (short[])input.Clone();
+        }
+
+        var coefficients = CreateLowShelf(sampleRate, cutoffHz, gainDb, 1.0);
+        return ApplyBiquad(input, coefficients);
+    }
+
+    private static short[] ApplyHighShelf(short[] input, int sampleRate, double cutoffHz, double gainDb)
+    {
+        if (Math.Abs(gainDb) < 0.0001)
+        {
+            return (short[])input.Clone();
+        }
+
+        var coefficients = CreateHighShelf(sampleRate, cutoffHz, gainDb, 1.0);
+        return ApplyBiquad(input, coefficients);
+    }
+
+    private static short[] ApplyPeakingEq(short[] input, int sampleRate, double centerHz, double q, double gainDb)
+    {
+        if (Math.Abs(gainDb) < 0.0001)
+        {
+            return (short[])input.Clone();
+        }
+
+        var coefficients = CreatePeakingEq(sampleRate, centerHz, q, gainDb);
+        return ApplyBiquad(input, coefficients);
+    }
+
     private static short[] ApplyBiquadLowPass(short[] input, int sampleRate, double cutoffHz, double q)
     {
         var omega = 2.0 * Math.PI * Math.Clamp(cutoffHz, 20.0, (sampleRate * 0.5) - 20.0) / sampleRate;
@@ -129,6 +186,101 @@ internal static class AudioDsp
         return output;
     }
 
+    private static short[] ApplyBiquad(short[] input, BiquadCoefficients coefficients)
+    {
+        var output = new short[input.Length];
+        double x1 = 0;
+        double x2 = 0;
+        double y1 = 0;
+        double y2 = 0;
+
+        for (var i = 0; i < input.Length; i++)
+        {
+            var x0 = input[i];
+            var y0 = (coefficients.B0 * x0) + (coefficients.B1 * x1) + (coefficients.B2 * x2) - (coefficients.A1 * y1) - (coefficients.A2 * y2);
+            output[i] = ClampToInt16(y0);
+            x2 = x1;
+            x1 = x0;
+            y2 = y1;
+            y1 = y0;
+        }
+
+        return output;
+    }
+
+    private static BiquadCoefficients CreatePeakingEq(int sampleRate, double centerHz, double q, double gainDb)
+    {
+        var omega = 2.0 * Math.PI * ClampFilterFrequency(sampleRate, centerHz) / sampleRate;
+        var sin = Math.Sin(omega);
+        var cos = Math.Cos(omega);
+        var alpha = sin / (2.0 * Math.Max(0.1, q));
+        var a = Math.Pow(10.0, gainDb / 40.0);
+
+        var b0 = 1.0 + (alpha * a);
+        var b1 = -2.0 * cos;
+        var b2 = 1.0 - (alpha * a);
+        var a0 = 1.0 + (alpha / a);
+        var a1 = -2.0 * cos;
+        var a2 = 1.0 - (alpha / a);
+
+        return NormalizeBiquad(b0, b1, b2, a0, a1, a2);
+    }
+
+    private static BiquadCoefficients CreateLowShelf(int sampleRate, double cutoffHz, double gainDb, double slope)
+    {
+        var omega = 2.0 * Math.PI * ClampFilterFrequency(sampleRate, cutoffHz) / sampleRate;
+        var sin = Math.Sin(omega);
+        var cos = Math.Cos(omega);
+        var a = Math.Pow(10.0, gainDb / 40.0);
+        var safeSlope = Math.Max(0.1, slope);
+        var alpha = sin / 2.0 * Math.Sqrt((a + (1.0 / a)) * ((1.0 / safeSlope) - 1.0) + 2.0);
+        var beta = 2.0 * Math.Sqrt(a) * alpha;
+
+        var b0 = a * ((a + 1.0) - ((a - 1.0) * cos) + beta);
+        var b1 = 2.0 * a * ((a - 1.0) - ((a + 1.0) * cos));
+        var b2 = a * ((a + 1.0) - ((a - 1.0) * cos) - beta);
+        var a0 = (a + 1.0) + ((a - 1.0) * cos) + beta;
+        var a1 = -2.0 * ((a - 1.0) + ((a + 1.0) * cos));
+        var a2 = (a + 1.0) + ((a - 1.0) * cos) - beta;
+
+        return NormalizeBiquad(b0, b1, b2, a0, a1, a2);
+    }
+
+    private static BiquadCoefficients CreateHighShelf(int sampleRate, double cutoffHz, double gainDb, double slope)
+    {
+        var omega = 2.0 * Math.PI * ClampFilterFrequency(sampleRate, cutoffHz) / sampleRate;
+        var sin = Math.Sin(omega);
+        var cos = Math.Cos(omega);
+        var a = Math.Pow(10.0, gainDb / 40.0);
+        var safeSlope = Math.Max(0.1, slope);
+        var alpha = sin / 2.0 * Math.Sqrt((a + (1.0 / a)) * ((1.0 / safeSlope) - 1.0) + 2.0);
+        var beta = 2.0 * Math.Sqrt(a) * alpha;
+
+        var b0 = a * ((a + 1.0) + ((a - 1.0) * cos) + beta);
+        var b1 = -2.0 * a * ((a - 1.0) + ((a + 1.0) * cos));
+        var b2 = a * ((a + 1.0) + ((a - 1.0) * cos) - beta);
+        var a0 = (a + 1.0) - ((a - 1.0) * cos) + beta;
+        var a1 = 2.0 * ((a - 1.0) - ((a + 1.0) * cos));
+        var a2 = (a + 1.0) - ((a - 1.0) * cos) - beta;
+
+        return NormalizeBiquad(b0, b1, b2, a0, a1, a2);
+    }
+
+    private static BiquadCoefficients NormalizeBiquad(double b0, double b1, double b2, double a0, double a1, double a2)
+    {
+        return new BiquadCoefficients(
+            b0 / a0,
+            b1 / a0,
+            b2 / a0,
+            a1 / a0,
+            a2 / a0);
+    }
+
+    private static double ClampFilterFrequency(int sampleRate, double frequencyHz)
+    {
+        return Math.Clamp(frequencyHz, 20.0, Math.Max(40.0, (sampleRate * 0.5) - 20.0));
+    }
+
     private static short SampleHermite(short[] input, double position)
     {
         var index1 = Math.Clamp((int)Math.Floor(position), 0, input.Length - 1);
@@ -162,4 +314,6 @@ internal static class AudioDsp
     {
         return (short)Math.Clamp(Math.Round(sample, MidpointRounding.AwayFromZero), short.MinValue, short.MaxValue);
     }
+
+    private readonly record struct BiquadCoefficients(double B0, double B1, double B2, double A1, double A2);
 }

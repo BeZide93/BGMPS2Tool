@@ -33,7 +33,7 @@ public static class BgmWaveRebuilder
             ?? throw new FileNotFoundException("No matching .wd file was found for the requested .bgm.", bgmPath);
 
         var config = LoadConfig(log);
-        var wave = ApplyVolume(WaveReader.ReadStereoPcm16(inputWavePath), config.Volume);
+        var wave = ApplyPreEncodeConditioning(ApplyVolume(WaveReader.ReadStereoPcm16(inputWavePath), config.Volume), config, log);
         var outputDirectory = Path.Combine(assetDirectory, "output");
         Directory.CreateDirectory(outputDirectory);
 
@@ -59,7 +59,7 @@ public static class BgmWaveRebuilder
         var config = RebuildConfig.Default;
         if (!File.Exists(configPath))
         {
-            log.WriteLine($"Config: {ConfigFileName} not found next to the tool. Using defaults volume={config.Volume:0.###}, hold_minutes={config.HoldMinutes:0.###}.");
+            log.WriteLine($"Config: {ConfigFileName} not found next to the tool. Using defaults volume={config.Volume:0.###}, hold_minutes={config.HoldMinutes:0.###}, pre_eq={config.PreEqStrength:0.###}, pre_lowpass_hz={config.PreLowPassHz:0.###}.");
             return config;
         }
 
@@ -116,10 +116,42 @@ public static class BgmWaveRebuilder
                     }
 
                     break;
+                case "pre_eq":
+                case "pre_eq_strength":
+                    if (value < 0.0)
+                    {
+                        log.WriteLine("Config warning: pre_eq must be at least 0. Keeping the current value.");
+                    }
+                    else if (value > 1.0)
+                    {
+                        log.WriteLine("Config warning: pre_eq must not exceed 1.0. Keeping the current value.");
+                    }
+                    else
+                    {
+                        config = config with { PreEqStrength = value };
+                    }
+
+                    break;
+                case "pre_lowpass_hz":
+                    if (value != 0.0 && value < 1000.0)
+                    {
+                        log.WriteLine("Config warning: pre_lowpass_hz must be 0 or at least 1000. Keeping the current value.");
+                    }
+                    else if (value > 20000.0)
+                    {
+                        log.WriteLine("Config warning: pre_lowpass_hz must not exceed 20000. Keeping the current value.");
+                    }
+                    else
+                    {
+                        config = config with { PreLowPassHz = value };
+                    }
+
+                    break;
             }
         }
 
-        log.WriteLine($"Config: loaded {configPath} -> volume={config.Volume:0.###}, hold_minutes={config.HoldMinutes:0.###}");
+        log.WriteLine(
+            $"Config: loaded {configPath} -> volume={config.Volume:0.###}, hold_minutes={config.HoldMinutes:0.###}, pre_eq={config.PreEqStrength:0.###}, pre_lowpass_hz={config.PreLowPassHz:0.###}");
         return config;
     }
 
@@ -457,6 +489,32 @@ public static class BgmWaveRebuilder
             wave.LoopEndSample);
     }
 
+    private static WavePcmData ApplyPreEncodeConditioning(WavePcmData wave, RebuildConfig config, TextWriter log)
+    {
+        var applyEq = config.PreEqStrength > 0.0001;
+        var applyLowPass = config.PreLowPassHz > 20.0;
+        if (!applyEq && !applyLowPass)
+        {
+            return wave;
+        }
+
+        var conditionedLeft = AudioDsp.ApplyPreEncodeConditioning(wave.Left, wave.SampleRate, config.PreEqStrength, config.PreLowPassHz);
+        var conditionedRight = wave.IsStereo
+            ? AudioDsp.ApplyPreEncodeConditioning(wave.Right, wave.SampleRate, config.PreEqStrength, config.PreLowPassHz)
+            : wave.Right;
+
+        log.WriteLine(
+            $"Applied pre-encode conditioning: pre_eq={config.PreEqStrength:0.###}, pre_lowpass_hz={(applyLowPass ? config.PreLowPassHz.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "off")}.");
+
+        return new WavePcmData(
+            conditionedLeft,
+            conditionedRight,
+            wave.SampleRate,
+            wave.IsStereo,
+            wave.LoopStartSample,
+            wave.LoopEndSample);
+    }
+
     private static short[] ScaleChannel(short[] input, double volume)
     {
         var output = new short[input.Length];
@@ -733,9 +791,9 @@ public static class BgmWaveRebuilder
 
     private sealed record AdsrTemplate(ushort Adsr1, ushort Adsr2);
     private sealed record TrackLayout(int Start, int Length);
-    private sealed record RebuildConfig(double Volume, double HoldMinutes)
+    private sealed record RebuildConfig(double Volume, double HoldMinutes, double PreEqStrength, double PreLowPassHz)
     {
-        public static RebuildConfig Default { get; } = new(1.0, DefaultLoopHoldMinutes);
+        public static RebuildConfig Default { get; } = new(1.0, DefaultLoopHoldMinutes, 0.0, 0.0);
     }
     private sealed record PreparedReplacementAudio(
         List<byte[]> EncodedChannels,

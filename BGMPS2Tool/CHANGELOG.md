@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## v0.6.11 - 2026-04-05
+
+### Changed
+
+- added optional pre-encode WAV conditioning controls for the `replacewav` path: `pre_eq` and `pre_lowpass_hz`
+
+### Fixed
+
+- made it possible to tame brittle, metallic, or overly harsh long-song replacements before PS2 ADPCM encoding without affecting the MIDI/SF2 path
+
 ## v0.6.10 - 2026-04-05
 
 ### Changed

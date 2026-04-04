@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.6.10`
+Version: `v0.6.11`
 
 `BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
@@ -66,12 +66,16 @@ Supported options:
 
 - `volume=...`
 - `hold_minutes=...`
+- `pre_eq=...`
+- `pre_lowpass_hz=...`
 
 Notes:
 
 - `volume` applies to imported WAVs and to SoundFont sample audio before PS2 encoding.
 - `hold_minutes` is mainly relevant to the older `replacewav` loop workflow.
 - `hold_minutes` does not drive the actual note lengths in the MIDI/SF2 workflow, because those come from the MIDI sequence itself.
+- `pre_eq` is a gentle pre-encode tone-shaping stage for the WAV workflow. It can help reduce metallic or brittle artifacts after aggressive PS2 downsampling and ADPCM encoding.
+- `pre_lowpass_hz` applies an optional additional low-pass before PS2 encoding in the WAV workflow. Use `0` to disable it.
 
 ## What The Tool Does
 

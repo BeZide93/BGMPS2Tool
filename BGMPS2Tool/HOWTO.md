@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.6.10`
+Version: `v0.6.11`
 
 ## Goal
 
@@ -31,18 +31,31 @@ Available settings:
 ```ini
 volume=1.0
 hold_minutes=60
+pre_eq=0.0
+pre_lowpass_hz=0
 ```
 
 Meaning:
 
 - `volume`: loudness multiplier for imported WAVs and SoundFont sample audio
 - `hold_minutes`: minimum note hold time for looped `replacewav` builds
+- `pre_eq`: optional tone shaping before PS2 encoding for the WAV workflow
+- `pre_lowpass_hz`: optional extra low-pass cutoff before PS2 encoding for the WAV workflow
 
 Notes:
 
 - `hold_minutes` mainly affects the older WAV replacement path
 - MIDI/SF2 note lengths come from the MIDI itself
 - allowed `hold_minutes` range: `0.1` to `600`
+- allowed `pre_eq` range: `0.0` to `1.0`
+- allowed `pre_lowpass_hz` range: `0` or `1000` to `20000`
+
+Suggested starting values for harsh or metallic WAV replacements:
+
+```ini
+pre_eq=0.35
+pre_lowpass_hz=10000
+```
 
 ## Method 1: WAV Replacement
 
