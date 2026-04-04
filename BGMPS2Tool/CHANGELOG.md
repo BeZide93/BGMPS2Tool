@@ -1,5 +1,25 @@
 # CHANGELOG
 
+## v0.6.7 - 2026-04-04
+
+### Changed
+
+- `replacemidi` now falls back to the original `waveXXXX.wd` when no usable `.sf2` is available for the MIDI
+
+### Fixed
+
+- prevented failed MIDI rebuilds when the selected or auto-detected `.sf2` is missing required presets but the original PS2 `WD` can still be used directly
+
+## v0.6.6 - 2026-04-04
+
+### Changed
+
+- the `MIDI + SF2 -> BGM + WD` converter now stops with a clear error when the MIDI references SoundFont presets that do not exist in the selected `.sf2`
+
+### Fixed
+
+- prevented silent generation of effectively empty or unusable PS2 outputs when a MIDI/SF2 preset mismatch occurs
+
 ## v0.6.5 - 2026-04-04
 
 ### Changed

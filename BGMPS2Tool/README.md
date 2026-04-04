@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.6.0`
+Version: `v0.6.7`
 
 `BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
@@ -93,6 +93,8 @@ When you give the tool a MIDI like `music188.mid`, it will:
 5. Convert the MIDI into a new PS2 `BGM` sequence
 6. Write the result into an `output` folder next to the MIDI
 
+If no usable `.sf2` is found, the tool can fall back to the original `waveXXXX.wd` and use its existing PS2 instruments directly.
+
 ## Important Notes
 
 - This tool is made for PS2 `KH2FM` music replacement.
@@ -103,6 +105,7 @@ When you give the tool a MIDI like `music188.mid`, it will:
 - For compatibility, the tool keeps the original PS2 header/container identity where practical, but the authored sequence/bank data is rebuilt.
 - The current SoundFont importer ignores some advanced SF2 features such as filter/LFO/modulator behavior.
 - The current MIDI importer ignores pitch-bend because the KH2 PS2 pitch opcode mapping is still unknown.
+- If a MIDI does not match the available `.sf2`, the tool will now try to use the original `waveXXXX.wd` as the program source before failing.
 
 ## Quick Start
 

@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.6.0`
+Version: `v0.6.7`
 
 ## Goal
 
@@ -96,6 +96,8 @@ If the SoundFont is not next to the MIDI under the expected `waveXXXX.sf2` name,
 .\BGMInfo.exe replacemidi "C:\Path\To\music188.mid" "C:\Path\To\wave0188.sf2"
 ```
 
+If no usable `.sf2` is found, the tool automatically falls back to the original `waveXXXX.wd` and uses the PS2 bank directly.
+
 Output:
 
 ```text
@@ -150,7 +152,9 @@ Make sure the input file is in the same folder as the correct `musicXXX.bgm`.
 
 ### "No matching .sf2 was found"
 
-Place `waveXXXX.sf2` next to the MIDI, or call `replacemidi` with the SoundFont path explicitly.
+The tool now tries to fall back to the original `waveXXXX.wd` automatically.
+
+If you want a newly authored bank instead of the original PS2 bank, place `waveXXXX.sf2` next to the MIDI, or call `replacemidi` with the SoundFont path explicitly.
 
 ### The result sounds different from the original SF2 playback
 

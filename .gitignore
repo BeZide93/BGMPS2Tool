@@ -1,0 +1,29 @@
+# Build outputs
+bin/
+obj/
+output/
+
+# Local temp/build folders
+.bgm_midi_build/
+.bgm_publish/
+.bgm_temp_build/
+.seb_temp_build/
+.dotnet/
+.dotnet-home/
+.dotnet_cli_home/
+.appdata/
+
+# User/game assets
+_Extracted KH2FM/
+blizzard/
+music059/
+se000/
+replacewav-test/
+
+# Example/source assets kept out of GitHub package
+*.win32.scd
+*.ps2.wav
+*.sf2
+*.wd
+*.bgm
+*.seb
