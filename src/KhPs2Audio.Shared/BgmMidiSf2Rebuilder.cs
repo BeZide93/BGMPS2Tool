@@ -7,6 +7,8 @@ public static class BgmMidiSf2Rebuilder
     private const string ConfigFileName = "config.ini";
     private const double DefaultVolume = 1.0;
     private const ushort DefaultPpqn = 48;
+    private const int MaxExpandedBgmGrowthBytes = 16 * 1024;
+    private const double MaxExpandedBgmGrowthFactor = 2.0;
     private const int SpuSampleRate = 44100;
     private const int SpuMaxLevel = 0x7FFF;
     private const int MaxEnvelopeSearchSamples = SpuSampleRate * 120;
@@ -540,6 +542,9 @@ public static class BgmMidiSf2Rebuilder
             var bankLsb = 0;
             var currentProgram = 0;
             byte? emittedProgram = null;
+            int? emittedVolume = null;
+            int? emittedExpression = null;
+            int? emittedPan = null;
             var sustainDown = false;
             var deferredNoteOffs = new HashSet<int>();
             var trackName = midi.Tracks.FirstOrDefault(track => track.Events.Any(evt => evt.Channel == channel))?.Name ?? $"Channel {channel + 1}";
@@ -558,8 +563,11 @@ public static class BgmMidiSf2Rebuilder
                         currentProgram = programChange.Program;
                         if (TryResolveProgram(programMap, bankMsb, bankLsb, currentProgram, out var mappedProgram))
                         {
-                            authoredEvents.Add(new AuthoredProgramEvent(programChange.Tick, mappedProgram));
-                            emittedProgram = mappedProgram;
+                            if (emittedProgram != mappedProgram)
+                            {
+                                authoredEvents.Add(new AuthoredProgramEvent(programChange.Tick, mappedProgram));
+                                emittedProgram = mappedProgram;
+                            }
                         }
                         else
                         {
@@ -568,14 +576,35 @@ public static class BgmMidiSf2Rebuilder
 
                         break;
                     case MidiControlChangeEvent control when control.Controller == 7:
-                        authoredEvents.Add(new AuthoredVolumeEvent(control.Tick, MapMidiAttenuationController(control.Value)));
+                    {
+                        var mappedVolume = MapMidiAttenuationController(control.Value);
+                        if (emittedVolume != mappedVolume)
+                        {
+                            authoredEvents.Add(new AuthoredVolumeEvent(control.Tick, mappedVolume));
+                            emittedVolume = mappedVolume;
+                        }
+
                         break;
+                    }
                     case MidiControlChangeEvent control when control.Controller == 10:
-                        authoredEvents.Add(new AuthoredPanEvent(control.Tick, control.Value));
+                        if (emittedPan != control.Value)
+                        {
+                            authoredEvents.Add(new AuthoredPanEvent(control.Tick, control.Value));
+                            emittedPan = control.Value;
+                        }
+
                         break;
                     case MidiControlChangeEvent control when control.Controller == 11:
-                        authoredEvents.Add(new AuthoredExpressionEvent(control.Tick, MapMidiAttenuationController(control.Value)));
+                    {
+                        var mappedExpression = MapMidiAttenuationController(control.Value);
+                        if (emittedExpression != mappedExpression)
+                        {
+                            authoredEvents.Add(new AuthoredExpressionEvent(control.Tick, mappedExpression));
+                            emittedExpression = mappedExpression;
+                        }
+
                         break;
+                    }
                     case MidiControlChangeEvent control when control.Controller == 64:
                         if (control.Value >= 64)
                         {
@@ -786,41 +815,110 @@ public static class BgmMidiSf2Rebuilder
             throw new InvalidDataException("Original .bgm is too small.");
         }
 
-        var ppqn = midi.Division > 0 ? checked((ushort)midi.Division) : DefaultPpqn;
-        var trackBuffers = new List<byte[]>
+        var templateTrackCount = Math.Max(1, (int)templateBytes[0x08]);
+        var targetPpqn = BinaryHelpers.ReadUInt16LE(templateBytes, 0x0E);
+        if (targetPpqn == 0)
         {
-            BuildConductorTrack(midi)
-        };
-        trackBuffers.AddRange(plan.TrackPlans.Select(static track => BuildPlaybackTrack(track.Events)));
-
-        var output = new List<byte>(0x20 + trackBuffers.Sum(static track => 4 + track.Length));
-        output.AddRange(templateBytes.Take(0x20));
-        while (output.Count < 0x20)
-        {
-            output.Add(0);
+            targetPpqn = DefaultPpqn;
         }
 
-        var header = output.ToArray();
-        BinaryHelpers.WriteUInt16LE(header, 0x04, (ushort)sequenceId);
-        BinaryHelpers.WriteUInt16LE(header, 0x06, (ushort)bankId);
-        BinaryHelpers.WriteUInt16LE(header, 0x08, checked((ushort)trackBuffers.Count));
-        BinaryHelpers.WriteUInt16LE(header, 0x0E, ppqn);
-
-        output.Clear();
-        output.AddRange(header);
-        foreach (var track in trackBuffers)
+        if (plan.TrackPlans.Count + 1 > templateTrackCount)
         {
-            output.AddRange(BitConverter.GetBytes(track.Length));
-            output.AddRange(track);
+            throw new InvalidDataException(
+                $"The MIDI requires {plan.TrackPlans.Count + 1} BGM tracks including conductor, but the original file only exposes {templateTrackCount} track slots.");
         }
 
-        var bytes = output.ToArray();
-        BinaryHelpers.WriteUInt32LE(bytes, 0x10, (uint)bytes.Length);
-        log.WriteLine($"Authored BGM from MIDI+SF2: {trackBuffers.Count} track(s), PPQN {ppqn}, file size {bytes.Length} bytes.");
-        return bytes;
+        var conductorTrack = BuildConductorTrack(midi, targetPpqn);
+        var generatedPlaybackTracks = plan.TrackPlans
+            .Select(track => new GeneratedTrack(track.Channel, track.Name, BuildPlaybackTrack(track.Events, checked((ushort)midi.Division), targetPpqn)))
+            .ToList();
+
+        var trackLayout = ReadTrackLayout(templateBytes, templateTrackCount);
+        var trackBytesBySlot = new byte[templateTrackCount][];
+        var slotLengths = trackLayout.Select(static layout => layout.Length).ToArray();
+        trackBytesBySlot[0] = conductorTrack;
+        slotLengths[0] = Math.Max(slotLengths[0], conductorTrack.Length);
+
+        var availableSlots = Enumerable.Range(1, trackLayout.Count - 1)
+            .Select(index => new AvailableTrackSlot(index, trackLayout[index]))
+            .OrderByDescending(slot => slot.Layout.Length)
+            .ToList();
+        var sortedGeneratedTracks = generatedPlaybackTracks
+            .OrderByDescending(track => track.Bytes.Length)
+            .ToList();
+
+        if (sortedGeneratedTracks.Count > availableSlots.Count)
+        {
+            throw new InvalidDataException("The MIDI produced more playback tracks than the original PS2 BGM can hold.");
+        }
+
+        for (var i = 0; i < sortedGeneratedTracks.Count; i++)
+        {
+            var track = sortedGeneratedTracks[i];
+            var slot = availableSlots[i];
+            trackBytesBySlot[slot.Index] = track.Bytes;
+            slotLengths[slot.Index] = Math.Max(slotLengths[slot.Index], track.Bytes.Length);
+        }
+
+        var silentTrack = BuildSilentTrack();
+        foreach (var unusedSlot in availableSlots.Skip(sortedGeneratedTracks.Count))
+        {
+            trackBytesBySlot[unusedSlot.Index] = silentTrack;
+            slotLengths[unusedSlot.Index] = Math.Max(slotLengths[unusedSlot.Index], silentTrack.Length);
+        }
+
+        var needsExpansion = slotLengths.Where((length, index) => length > trackLayout[index].Length).Any();
+        var outputLength = CalculateExpandedBgmLength(slotLengths);
+        var maxAllowedLength = CalculateMaxAllowedBgmLength(templateBytes.Length);
+        if (needsExpansion && outputLength > maxAllowedLength)
+        {
+            var largestGeneratedTrack = sortedGeneratedTracks.FirstOrDefault();
+            var largestOriginalSlot = availableSlots.FirstOrDefault();
+            if (largestGeneratedTrack is not null && largestOriginalSlot is not null)
+            {
+                throw new InvalidDataException(
+                    $"The MIDI track '{largestGeneratedTrack.Name}' (channel {largestGeneratedTrack.Channel + 1}) needs {largestGeneratedTrack.Bytes.Length} bytes, but the largest available original BGM track slot only has {largestOriginalSlot.Layout.Length} bytes. " +
+                    $"A safe expanded rebuild is capped at {maxAllowedLength} bytes, while this MIDI would require {outputLength} bytes.");
+            }
+
+            throw new InvalidDataException($"The MIDI is too dense for a safe PS2 rebuild. Expanded output would require {outputLength} bytes, but the conservative safety cap is {maxAllowedLength} bytes.");
+        }
+
+        var output = new byte[outputLength];
+        Buffer.BlockCopy(templateBytes, 0, output, 0, Math.Min(0x20, templateBytes.Length));
+        BinaryHelpers.WriteUInt16LE(output, 0x04, (ushort)sequenceId);
+        BinaryHelpers.WriteUInt16LE(output, 0x06, (ushort)bankId);
+        BinaryHelpers.WriteUInt16LE(output, 0x08, (ushort)templateTrackCount);
+        BinaryHelpers.WriteUInt16LE(output, 0x0E, targetPpqn);
+        BinaryHelpers.WriteUInt32LE(output, 0x10, (uint)output.Length);
+
+        var cursor = 0x20;
+        for (var trackIndex = 0; trackIndex < templateTrackCount; trackIndex++)
+        {
+            var slotLength = slotLengths[trackIndex];
+            BinaryHelpers.WriteUInt32LE(output, cursor, (uint)slotLength);
+            cursor += 4;
+
+            var trackBytes = trackBytesBySlot[trackIndex] ?? silentTrack;
+            if (trackBytes.Length > slotLength)
+            {
+                throw new InvalidDataException(
+                    $"The generated track {trackIndex} does not fit into its allocated BGM slot (needed {trackBytes.Length} bytes, slot has {slotLength}).");
+            }
+
+            Buffer.BlockCopy(trackBytes, 0, output, cursor, trackBytes.Length);
+            cursor += slotLength;
+        }
+
+        var rebuildMode = needsExpansion
+            ? $"expanded from {templateBytes.Length} to {output.Length} bytes"
+            : $"in-place at {output.Length} bytes";
+        log.WriteLine(
+            $"Authored BGM conservative rebuild: preserved {templateTrackCount} original track slot(s), {generatedPlaybackTracks.Count + 1} generated track(s), target PPQN {targetPpqn}, {rebuildMode}.");
+        return output;
     }
 
-    private static byte[] BuildConductorTrack(MidiFile midi)
+    private static byte[] BuildConductorTrack(MidiFile midi, ushort targetPpqn)
     {
         var tempoEvents = midi.Tracks
             .SelectMany(static track => track.Events)
@@ -845,10 +943,11 @@ public static class BgmMidiSf2Rebuilder
                 continue;
             }
 
-            WriteDelta(bytes, checked((int)Math.Max(0, tempo.Tick - currentTick)));
+            var scaledTick = ScaleTick(tempo.Tick, checked((ushort)midi.Division), targetPpqn);
+            WriteDelta(bytes, checked((int)Math.Max(0, scaledTick - currentTick)));
             bytes.Add(0x08);
             bytes.Add((byte)Math.Clamp(tempo.Bpm, 1, 255));
-            currentTick = tempo.Tick;
+            currentTick = scaledTick;
             previousTempo = tempo.Bpm;
         }
 
@@ -857,13 +956,16 @@ public static class BgmMidiSf2Rebuilder
         return [.. bytes];
     }
 
-    private static byte[] BuildPlaybackTrack(IReadOnlyList<AuthoredTrackEvent> events)
+    private static byte[] BuildPlaybackTrack(IReadOnlyList<AuthoredTrackEvent> events, ushort sourcePpqn, ushort targetPpqn)
     {
         var bytes = new List<byte>(Math.Max(32, events.Count * 4));
         long currentTick = 0;
+        byte previousKey = 0;
+        byte previousVelocity = 100;
         foreach (var evt in events)
         {
-            WriteDelta(bytes, checked((int)Math.Max(0, evt.Tick - currentTick)));
+            var scaledTick = ScaleTick(evt.Tick, sourcePpqn, targetPpqn);
+            WriteDelta(bytes, checked((int)Math.Max(0, scaledTick - currentTick)));
             switch (evt)
             {
                 case AuthoredProgramEvent program:
@@ -883,22 +985,137 @@ public static class BgmMidiSf2Rebuilder
                     bytes.Add((byte)Math.Clamp(pan.Value, 0, 127));
                     break;
                 case AuthoredNoteOnEvent noteOn:
-                    bytes.Add(0x11);
-                    bytes.Add((byte)Math.Clamp(noteOn.Key, 0, 127));
-                    bytes.Add((byte)Math.Clamp(noteOn.Velocity, 1, 127));
+                {
+                    var key = (byte)Math.Clamp(noteOn.Key, 0, 127);
+                    var velocity = (byte)Math.Clamp(noteOn.Velocity, 1, 127);
+                    if (key == previousKey && velocity == previousVelocity)
+                    {
+                        bytes.Add(0x10);
+                    }
+                    else if (velocity == previousVelocity)
+                    {
+                        bytes.Add(0x12);
+                        bytes.Add(key);
+                    }
+                    else if (key == previousKey)
+                    {
+                        bytes.Add(0x13);
+                        bytes.Add(velocity);
+                    }
+                    else
+                    {
+                        bytes.Add(0x11);
+                        bytes.Add(key);
+                        bytes.Add(velocity);
+                    }
+
+                    previousKey = key;
+                    previousVelocity = velocity;
                     break;
+                }
                 case AuthoredNoteOffEvent noteOff:
-                    bytes.Add(0x1A);
-                    bytes.Add((byte)Math.Clamp(noteOff.Key, 0, 127));
+                {
+                    var key = (byte)Math.Clamp(noteOff.Key, 0, 127);
+                    if (key == previousKey)
+                    {
+                        bytes.Add(0x18);
+                    }
+                    else
+                    {
+                        bytes.Add(0x1A);
+                        bytes.Add(key);
+                        previousKey = key;
+                    }
+
                     break;
+                }
             }
 
-            currentTick = evt.Tick;
+            currentTick = scaledTick;
         }
 
         WriteDelta(bytes, 96);
         bytes.Add(0x00);
         return [.. bytes];
+    }
+
+    private static byte[] BuildSilentTrack()
+    {
+        return
+        [
+            0x00, 0x22, 0x00,
+            0x00, 0x24, 0x00,
+            0x00, 0x00,
+        ];
+    }
+
+    private static long ScaleTick(long tick, ushort sourcePpqn, ushort targetPpqn)
+    {
+        if (tick <= 0)
+        {
+            return 0;
+        }
+
+        if (sourcePpqn == 0 || sourcePpqn == targetPpqn)
+        {
+            return tick;
+        }
+
+        return Math.Max(0L, (long)Math.Round(tick * (targetPpqn / (double)sourcePpqn), MidpointRounding.AwayFromZero));
+    }
+
+    private static List<TrackLayout> ReadTrackLayout(byte[] data, int trackCount)
+    {
+        var result = new List<TrackLayout>(trackCount);
+        var cursor = 0x20;
+        for (var trackIndex = 0; trackIndex < trackCount; trackIndex++)
+        {
+            if (cursor + 4 > data.Length)
+            {
+                throw new InvalidDataException("Track table exceeds original BGM length.");
+            }
+
+            var trackLength = checked((int)BinaryHelpers.ReadUInt32LE(data, cursor));
+            var trackStart = cursor + 4;
+            if (trackStart + trackLength > data.Length)
+            {
+                throw new InvalidDataException("A BGM track exceeds the original file length.");
+            }
+
+            result.Add(new TrackLayout(trackStart, trackLength));
+            cursor = trackStart + trackLength;
+        }
+
+        return result;
+    }
+
+    private static void WriteTrackIntoSlot(byte[] output, TrackLayout layout, byte[] trackBytes, string description)
+    {
+        if (trackBytes.Length > layout.Length)
+        {
+            throw new InvalidDataException(
+                $"The generated {description} does not fit into the original BGM slot (needed {trackBytes.Length} bytes, slot has {layout.Length}).");
+        }
+
+        Array.Clear(output, layout.Start, layout.Length);
+        Buffer.BlockCopy(trackBytes, 0, output, layout.Start, trackBytes.Length);
+    }
+
+    private static int CalculateExpandedBgmLength(IReadOnlyList<int> slotLengths)
+    {
+        var total = 0x20;
+        foreach (var slotLength in slotLengths)
+        {
+            total += 4 + slotLength;
+        }
+
+        return total;
+    }
+
+    private static int CalculateMaxAllowedBgmLength(int originalLength)
+    {
+        var factorCap = (int)Math.Ceiling(originalLength * MaxExpandedBgmGrowthFactor);
+        return Math.Max(originalLength + MaxExpandedBgmGrowthBytes, factorCap);
     }
 
     private static void WriteDelta(List<byte> buffer, int value)
@@ -1351,6 +1568,12 @@ internal sealed record MidiSf2ReplacementManifest(
 internal sealed record MidiSf2TrackManifest(int Channel, string Name, int EventCount);
 
 internal sealed record MidiSf2ProgramManifest(int Bank, int Program, byte InstrumentIndex, string PresetName, int RegionCount);
+
+internal sealed record GeneratedTrack(int Channel, string Name, byte[] Bytes);
+
+internal sealed record TrackLayout(int Start, int Length);
+
+internal sealed record AvailableTrackSlot(int Index, TrackLayout Layout);
 
 internal sealed class MissingSoundFontPresetException : Exception
 {

@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.6.8`
+Version: `v0.6.10`
 
 ## Goal
 
@@ -98,6 +98,8 @@ If the SoundFont is not next to the MIDI under the expected `waveXXXX.sf2` name,
 
 If no usable `.sf2` is found, the tool automatically falls back to the original `waveXXXX.wd` and uses the PS2 bank directly.
 
+The MIDI workflow keeps the original PS2 `BGM` track-slot layout. If a MIDI only slightly exceeds the original slot sizes, the tool can expand those slots conservatively. Very dense MIDIs can still be rejected if they exceed the safe rebuild limit.
+
 Output:
 
 ```text
@@ -138,6 +140,7 @@ Your files should be:
 - The current SoundFont importer converts presets, regions, key ranges, tuning, volume, pan, and loops.
 - Advanced SF2 features such as modulators, filters, and LFO behavior are currently ignored.
 - MIDI pitch-bend is currently ignored.
+- The MIDI workflow now keeps the original PS2 `BGM` slot layout. If a MIDI is too dense to fit safely into the original `musicXXX.bgm`, the tool will stop with a clear error instead of writing an unsafe oversized file.
 - Always test rebuilt files ingame after conversion.
 
 ## Troubleshooting

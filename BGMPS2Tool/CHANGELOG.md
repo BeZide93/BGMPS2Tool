@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## v0.6.10 - 2026-04-05
+
+### Changed
+
+- the `MIDI + SF2 -> BGM + WD` path now keeps the conservative original-slot rebuild, but can expand individual PS2 `BGM` track slots by a limited safe amount when a sequence only barely exceeds the original slot sizes
+
+### Fixed
+
+- restored previously working MIDI replacements that started failing after the strict `v0.6.9` slot-fit check
+- reduced redundant MIDI controller and program events before PS2 track authoring so more sequences fit without hitting the safety limit
+
+## v0.6.9 - 2026-04-05
+
+### Changed
+
+- the `MIDI + SF2 -> BGM + WD` path now writes MIDI sequences back into the original PS2 `BGM` slot layout instead of emitting arbitrarily large replacement `BGM` files
+
+### Fixed
+
+- prevented crash-prone oversized MIDI rebuilds by rejecting sequences that do not fit safely into the original PS2 `BGM` track slots
+- reduced MIDI track size by using more compact KH2 note opcodes when key and velocity state can be reused
+
 ## v0.6.8 - 2026-04-04
 
 ### Changed
