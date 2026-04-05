@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.6.11`
+Version: `v0.6.20`
 
 ## Goal
 
@@ -30,6 +30,7 @@ Available settings:
 
 ```ini
 volume=1.0
+sf2_volume=1.0
 hold_minutes=60
 pre_eq=0.0
 pre_lowpass_hz=0
@@ -37,7 +38,8 @@ pre_lowpass_hz=0
 
 Meaning:
 
-- `volume`: loudness multiplier for imported WAVs and SoundFont sample audio
+- `volume`: loudness multiplier for imported WAVs
+- `sf2_volume`: loudness multiplier for MIDI + SF2 conversion
 - `hold_minutes`: minimum note hold time for looped `replacewav` builds
 - `pre_eq`: optional tone shaping before PS2 encoding for the WAV workflow
 - `pre_lowpass_hz`: optional extra low-pass cutoff before PS2 encoding for the WAV workflow
@@ -45,6 +47,7 @@ Meaning:
 Notes:
 
 - `hold_minutes` mainly affects the older WAV replacement path
+- `sf2_volume=1.0` is recommended if you want the closest possible `SF2 -> WD -> SF2` roundtrip fidelity
 - MIDI/SF2 note lengths come from the MIDI itself
 - allowed `hold_minutes` range: `0.1` to `600`
 - allowed `pre_eq` range: `0.0` to `1.0`
@@ -111,7 +114,7 @@ If the SoundFont is not next to the MIDI under the expected `waveXXXX.sf2` name,
 
 If no usable `.sf2` is found, the tool automatically falls back to the original `waveXXXX.wd` and uses the PS2 bank directly.
 
-The MIDI workflow keeps the original PS2 `BGM` track-slot layout. If a MIDI only slightly exceeds the original slot sizes, the tool can expand those slots conservatively. Very dense MIDIs can still be rejected if they exceed the safe rebuild limit.
+The MIDI workflow writes a compact PS2 `BGM` that contains only the conductor plus the actually generated playback tracks. If a MIDI only slightly exceeds the original slot sizes, the tool can still expand those slots conservatively. Very dense MIDIs can still be rejected if they exceed the safe rebuild limit.
 
 Output:
 

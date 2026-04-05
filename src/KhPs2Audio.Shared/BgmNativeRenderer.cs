@@ -170,7 +170,11 @@ public static class BgmNativeRenderer
                 }
 
                 var matchingLayers = bank.Instruments[state.Program].Regions
-                    .Where(region => evt.Value1 >= region.KeyLow && evt.Value1 <= region.KeyHigh)
+                    .Where(region =>
+                        evt.Value1 >= region.KeyLow &&
+                        evt.Value1 <= region.KeyHigh &&
+                        evt.Value2 >= region.VelocityLow &&
+                        evt.Value2 <= region.VelocityHigh)
                     .ToArray();
 
                 if (matchingLayers.Length == 0)
@@ -567,6 +571,7 @@ public static class BgmNativeRenderer
                     var adsr2 = BinaryHelpers.ReadUInt16LE(data, regionOffset + 0x10);
                     var unityKey = 0x3A - BinaryHelpers.ReadSByte(data, regionOffset + 0x13);
                     var keyHigh = data[regionOffset + 0x14];
+                    var velocityHigh = data[regionOffset + 0x15];
                     var volume = data[regionOffset + 0x16] / 127f;
                     var pan = ConvertWdPan(data[regionOffset + 0x17]);
                     var fineTuneCents = ConvertWdFineTune(data[regionOffset + 0x12]);
@@ -583,6 +588,8 @@ public static class BgmNativeRenderer
                         isLast,
                         0,
                         keyHigh,
+                        0,
+                        velocityHigh,
                         unityKey,
                         fineTuneCents,
                         volume,
@@ -604,7 +611,16 @@ public static class BgmNativeRenderer
                                 ? previous.KeyLow
                                 : previous.KeyHigh + 1;
                     var keyHigh = region.IsLast ? 0x7F : region.KeyHigh;
-                    regions[regionIndex] = region with { KeyLow = keyLow, KeyHigh = keyHigh };
+                    var velocityLow = region.IsFirst
+                        ? 0
+                        : previous is null
+                            ? 0
+                            : region.KeyHigh == previous.KeyHigh
+                                ? previous.VelocityHigh + 1
+                                : 0;
+                    velocityLow = Math.Clamp(velocityLow, 0, 127);
+                    var velocityHigh = Math.Clamp(region.VelocityHigh, velocityLow, 127);
+                    regions[regionIndex] = region with { KeyLow = keyLow, KeyHigh = keyHigh, VelocityLow = velocityLow, VelocityHigh = velocityHigh };
                 }
 
                 instruments.Add(new Instrument(instrumentIndex, regions));
@@ -725,6 +741,8 @@ public static class BgmNativeRenderer
         bool IsLast,
         int KeyLow,
         int KeyHigh,
+        int VelocityLow,
+        int VelocityHigh,
         int UnityKey,
         int FineTuneCents,
         float Volume,

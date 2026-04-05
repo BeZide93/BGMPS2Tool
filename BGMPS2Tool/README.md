@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.6.11`
+Version: `v0.6.20`
 
 `BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
@@ -14,7 +14,7 @@ The new MIDI/SF2 workflow is cleaner than the legacy long-note workaround becaus
 - a real PS2 `WD` instrument bank from the SoundFont
 - a real PS2 `BGM` sequence from the MIDI
 
-For MIDI rebuilds, the tool now keeps the original PS2 track-slot layout and only expands track slots by a limited, conservative amount when that is needed to fit a valid sequence safely.
+For MIDI rebuilds, the tool now writes a compact PS2 `BGM` containing only the conductor plus the actually generated playback tracks, while still enforcing conservative size limits for safety.
 
 ## Included Files
 
@@ -65,13 +65,15 @@ from the same folder as `BGMInfo.exe`.
 Supported options:
 
 - `volume=...`
+- `sf2_volume=...`
 - `hold_minutes=...`
 - `pre_eq=...`
 - `pre_lowpass_hz=...`
 
 Notes:
 
-- `volume` applies to imported WAVs and to SoundFont sample audio before PS2 encoding.
+- `volume` applies to imported WAVs in the WAV workflow.
+- `sf2_volume` applies only to SoundFont sample audio in the MIDI/SF2 workflow. Keep it at `1.0` if you want the closest possible `SF2 -> WD -> SF2` roundtrip fidelity.
 - `hold_minutes` is mainly relevant to the older `replacewav` loop workflow.
 - `hold_minutes` does not drive the actual note lengths in the MIDI/SF2 workflow, because those come from the MIDI sequence itself.
 - `pre_eq` is a gentle pre-encode tone-shaping stage for the WAV workflow. It can help reduce metallic or brittle artifacts after aggressive PS2 downsampling and ADPCM encoding.
@@ -112,7 +114,8 @@ If no usable `.sf2` is found, the tool can fall back to the original `waveXXXX.w
 - The current SoundFont importer ignores some advanced SF2 features such as filter/LFO/modulator behavior.
 - The current MIDI importer ignores pitch-bend because the KH2 PS2 pitch opcode mapping is still unknown.
 - If a MIDI does not match the available `.sf2`, the tool will now try to use the original `waveXXXX.wd` as the program source before failing.
-- The MIDI path now keeps the original PS2 `BGM` track-slot layout for safety. Very dense MIDIs may be rejected if they cannot fit into the original `BGM` container without creating crash-prone output.
+- The MIDI path now writes a compact `BGM` track table for closer `MID -> BGM -> MID` roundtrip fidelity. Very dense MIDIs may still be rejected if they exceed the safe rebuild limit.
+- Newly authored multi-sample `WD` files now insert KH2-style 16-byte zero separators between sample chunks instead of packing all sample data directly back-to-back.
 
 ## Quick Start
 

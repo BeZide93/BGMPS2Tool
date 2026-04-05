@@ -564,54 +564,37 @@ internal static class SoundFontParser
         return output;
     }
 
-    internal static List<SoundFontRegion> NormalizeRegions(List<SoundFontRegion> regions, HashSet<string> warnings, int preferredVelocity)
+    internal static List<SoundFontRegion> NormalizeRegions(List<SoundFontRegion> regions, HashSet<string> warnings)
     {
         if (regions.Count == 0)
         {
             return [];
         }
 
-        var boundaries = new SortedSet<int> { 0, 128 };
+        var keyBoundaries = new SortedSet<int> { 0, 128 };
         foreach (var region in regions)
         {
-            boundaries.Add(Math.Clamp(region.KeyLow, 0, 127));
-            boundaries.Add(Math.Clamp(region.KeyHigh + 1, 1, 128));
+            keyBoundaries.Add(Math.Clamp(region.KeyLow, 0, 127));
+            keyBoundaries.Add(Math.Clamp(region.KeyHigh + 1, 1, 128));
         }
 
         var authored = new List<SoundFontRegion>();
-        var orderedBoundaries = boundaries.OrderBy(static value => value).ToArray();
-        for (var boundaryIndex = 0; boundaryIndex < orderedBoundaries.Length - 1; boundaryIndex++)
+        var orderedKeyBoundaries = keyBoundaries.OrderBy(static value => value).ToArray();
+        for (var boundaryIndex = 0; boundaryIndex < orderedKeyBoundaries.Length - 1; boundaryIndex++)
         {
-            var keyLow = orderedBoundaries[boundaryIndex];
-            var keyHigh = orderedBoundaries[boundaryIndex + 1] - 1;
+            var keyLow = orderedKeyBoundaries[boundaryIndex];
+            var keyHigh = orderedKeyBoundaries[boundaryIndex + 1] - 1;
             if (keyHigh < keyLow)
             {
                 continue;
             }
 
-            var candidates = regions
+            var keyCandidates = regions
                 .Where(region => keyLow >= region.KeyLow && keyHigh <= region.KeyHigh)
-                .OrderByDescending(static region => region.VelocityHigh - region.VelocityLow)
-                .ThenByDescending(static region => region.VelocityHigh)
-                .ThenByDescending(static region => region.Volume)
+                .OrderByDescending(static region => region.Volume)
                 .ToList();
 
-            List<SoundFontRegion>? selected = null;
-            if (candidates.Count > 0)
-            {
-                selected = candidates
-                    .Where(region => preferredVelocity >= region.VelocityLow && preferredVelocity <= region.VelocityHigh)
-                    .ToList();
-
-                if (selected.Count == 0)
-                {
-                    var nearestVelocityDistance = candidates.Min(region => DistanceToRange(preferredVelocity, region.VelocityLow, region.VelocityHigh));
-                    selected = candidates
-                        .Where(region => DistanceToRange(preferredVelocity, region.VelocityLow, region.VelocityHigh) == nearestVelocityDistance)
-                        .ToList();
-                }
-            }
-            else
+            if (keyCandidates.Count == 0)
             {
                 var chosen = regions
                     .OrderBy(region => DistanceToRange((keyLow + keyHigh) / 2, region.KeyLow, region.KeyHigh))
@@ -620,39 +603,81 @@ internal static class SoundFontParser
 
                 if (chosen is not null)
                 {
-                    selected = [chosen];
                     warnings.Add($"Filled a SoundFont key gap at {keyLow}-{keyHigh} using the nearest available source zone.");
+                    keyCandidates = [chosen];
                 }
             }
 
-            if (selected is null || selected.Count == 0)
+            if (keyCandidates.Count == 0)
             {
                 continue;
             }
 
-            foreach (var partitioned in selected
-                .Select(region => region with { KeyLow = keyLow, KeyHigh = keyHigh })
-                .OrderBy(static region => region.KeyHigh)
-                .ThenBy(static region => region.SourceSampleName, StringComparer.Ordinal)
-                .ThenBy(static region => region.StereoSourceSampleName ?? string.Empty, StringComparer.Ordinal))
+            var velocityBoundaries = new SortedSet<int> { 0, 128 };
+            foreach (var region in keyCandidates)
             {
-                if (authored.Count > 0 && CanMerge(authored[^1], partitioned))
+                velocityBoundaries.Add(Math.Clamp(region.VelocityLow, 0, 127));
+                velocityBoundaries.Add(Math.Clamp(region.VelocityHigh + 1, 1, 128));
+            }
+
+            var orderedVelocityBoundaries = velocityBoundaries.OrderBy(static value => value).ToArray();
+            for (var velocityIndex = 0; velocityIndex < orderedVelocityBoundaries.Length - 1; velocityIndex++)
+            {
+                var velocityLow = orderedVelocityBoundaries[velocityIndex];
+                var velocityHigh = orderedVelocityBoundaries[velocityIndex + 1] - 1;
+                if (velocityHigh < velocityLow)
                 {
-                    authored[^1] = authored[^1] with { KeyHigh = keyHigh };
+                    continue;
                 }
-                else
+
+                var velocityCandidates = keyCandidates
+                    .Where(region => velocityLow >= region.VelocityLow && velocityHigh <= region.VelocityHigh)
+                    .OrderByDescending(static region => region.Volume)
+                    .ToList();
+
+                if (velocityCandidates.Count == 0)
                 {
-                    authored.Add(partitioned);
+                    var chosen = keyCandidates
+                        .OrderBy(region => DistanceToRange((velocityLow + velocityHigh) / 2, region.VelocityLow, region.VelocityHigh))
+                        .ThenByDescending(static region => region.Volume)
+                        .FirstOrDefault();
+                    if (chosen is null)
+                    {
+                        continue;
+                    }
+
+                    velocityCandidates = [chosen];
+                }
+
+                foreach (var partitioned in velocityCandidates
+                    .Select(region => region with { KeyLow = keyLow, KeyHigh = keyHigh, VelocityLow = velocityLow, VelocityHigh = velocityHigh })
+                    .OrderBy(static region => region.KeyHigh)
+                    .ThenBy(static region => region.VelocityHigh)
+                    .ThenBy(static region => region.SourceSampleName, StringComparer.Ordinal)
+                    .ThenBy(static region => region.StereoSourceSampleName ?? string.Empty, StringComparer.Ordinal))
+                {
+                    if (authored.Count > 0 && CanMerge(authored[^1], partitioned))
+                    {
+                        authored[^1] = authored[^1] with { KeyHigh = keyHigh };
+                    }
+                    else
+                    {
+                        authored.Add(partitioned);
+                    }
                 }
             }
         }
 
-        return authored.Count == 0 ? regions.OrderBy(static region => region.KeyHigh).ToList() : authored;
+        return authored.Count == 0
+            ? regions.OrderBy(static region => region.KeyHigh).ThenBy(static region => region.VelocityHigh).ToList()
+            : authored;
     }
 
     private static bool CanMerge(SoundFontRegion left, SoundFontRegion right)
     {
         return left.KeyHigh + 1 == right.KeyLow &&
+               left.VelocityLow == right.VelocityLow &&
+               left.VelocityHigh == right.VelocityHigh &&
                left.IdentityKey == right.IdentityKey &&
                left.StereoIdentityKey == right.StereoIdentityKey &&
                left.RootKey == right.RootKey &&

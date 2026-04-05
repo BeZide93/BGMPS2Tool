@@ -185,6 +185,8 @@ public static class WdSampleTool
                         region.RegionIndex,
                         region.KeyLow,
                         region.KeyHigh,
+                        region.VelocityLow,
+                        region.VelocityHigh,
                         region.LoopStartBytes,
                         region.Stereo,
                         region.UnityKey,
@@ -292,6 +294,8 @@ public sealed record WdSampleManifestRegion(
     int RegionIndex,
     int KeyLow,
     int KeyHigh,
+    int VelocityLow,
+    int VelocityHigh,
     int LoopStartBytes,
     bool Stereo,
     int UnityKey,
@@ -352,11 +356,14 @@ internal sealed class WdBankFile
                 var loopStartBytes = checked((int)BinaryHelpers.ReadUInt32LE(data, offset + 0x8));
                 var unityKey = 0x3A - BinaryHelpers.ReadSByte(data, offset + 0x13);
                 var keyHigh = data[offset + 0x14];
+                var velocityHigh = data[offset + 0x15];
                 var fineTuneCents = WdSampleTool.ConvertWdFineTune(data[offset + 0x12]);
                 var volume = data[offset + 0x16] / 127f;
                 var pan = WdSampleTool.ConvertWdPan(data[offset + 0x17]);
+                var adsr1 = BinaryHelpers.ReadUInt16LE(data, offset + 0x0E);
+                var adsr2 = BinaryHelpers.ReadUInt16LE(data, offset + 0x10);
 
-                instrumentRegions.Add(new WdRegionEntry(offset, instrumentIndex, regionIndex, sampleOffset, loopStartBytes, stereo, first, last, 0, keyHigh, unityKey, fineTuneCents, volume, pan));
+                instrumentRegions.Add(new WdRegionEntry(offset, instrumentIndex, regionIndex, sampleOffset, loopStartBytes, stereo, first, last, 0, keyHigh, 0, velocityHigh, unityKey, fineTuneCents, volume, pan, adsr1, adsr2));
                 regionIndex++;
             }
 
@@ -372,7 +379,16 @@ internal sealed class WdBankFile
                             ? previous.KeyLow
                             : previous.KeyHigh + 1;
                 var keyHigh = region.Last ? 0x7F : region.KeyHigh;
-                instrumentRegions[i] = region with { KeyLow = keyLow, KeyHigh = keyHigh };
+                var velocityLow = region.First
+                    ? 0
+                    : previous is null
+                        ? 0
+                        : region.KeyHigh == previous.KeyHigh
+                            ? previous.VelocityHigh + 1
+                            : 0;
+                velocityLow = Math.Clamp(velocityLow, 0, 127);
+                var velocityHigh = Math.Clamp(region.VelocityHigh, velocityLow, 127);
+                instrumentRegions[i] = region with { KeyLow = keyLow, KeyHigh = keyHigh, VelocityLow = velocityLow, VelocityHigh = velocityHigh };
             }
 
             regions.AddRange(instrumentRegions);
@@ -389,7 +405,7 @@ internal sealed class WdBankFile
             var rawBytes = new byte[sampleLength];
             Buffer.BlockCopy(data, absoluteOffset, rawBytes, 0, sampleLength);
             var decoded = PsxAdpcmDecoder.Decode(rawBytes);
-            var sample = new WdSampleEntry(index, relativeOffset, rawBytes, decoded.Pcm, decoded.Looping);
+            var sample = new WdSampleEntry(index, relativeOffset, rawBytes, decoded.Pcm);
             samples.Add(sample);
             sampleMap.Add(relativeOffset, sample);
         }
@@ -405,10 +421,14 @@ internal sealed class WdBankFile
     public byte[] BuildPatchedFile(TextWriter log)
     {
         var outputSampleData = new List<byte>();
-        foreach (var sample in Samples)
+        for (var sampleIndex = 0; sampleIndex < Samples.Count; sampleIndex++)
         {
+            var sample = Samples[sampleIndex];
+            var storedSampleBytes = sample.ReplacementBytes is not null
+                ? WdLayoutHelpers.CreateStoredSampleChunk(sample.ReplacementBytes)
+                : sample.GetOutputBytes();
             sample.NewRelativeOffset = outputSampleData.Count;
-            outputSampleData.AddRange(sample.GetOutputBytes());
+            outputSampleData.AddRange(storedSampleBytes);
         }
 
         var output = new byte[SampleCollectionOffset + outputSampleData.Count];
@@ -431,13 +451,14 @@ internal sealed class WdBankFile
 
                     var maxLoopStart = Math.Max(0, sample.ReplacementBytes.Length - 0x10);
                     loopStartBytes = Math.Min(loopStartBytes & ~0xF, maxLoopStart);
+                    loopStartBytes = WdLayoutHelpers.OffsetLoopStartForStoredChunk(loopStartBytes > 0, loopStartBytes);
                 }
 
                 BinaryHelpers.WriteUInt32LE(output, region.FileOffset + 0x8, (uint)loopStartBytes);
             }
         }
 
-        log.WriteLine($"Rebuilt WD sample section: {outputSampleData.Count} bytes");
+        log.WriteLine($"Rebuilt WD sample section: {outputSampleData.Count} bytes using KH2-style 16-byte zero lead-ins for each stored sample");
         return output;
     }
 
@@ -458,22 +479,49 @@ internal sealed class WdBankFile
     }
 }
 
+internal static class WdLayoutHelpers
+{
+    public const int InterSamplePaddingBytes = 0x10;
+    public static readonly byte[] InterSampleZeroPadding = new byte[InterSamplePaddingBytes];
+
+    public static int CalculateSampleSectionLength(IReadOnlyList<byte[]> sampleChunks)
+    {
+        return sampleChunks.Sum(static chunk => chunk.Length);
+    }
+
+    public static byte[] CreateStoredSampleChunk(byte[] encodedSampleBytes)
+    {
+        var output = new byte[InterSamplePaddingBytes + encodedSampleBytes.Length];
+        Buffer.BlockCopy(encodedSampleBytes, 0, output, InterSamplePaddingBytes, encodedSampleBytes.Length);
+        return output;
+    }
+
+    public static int OffsetLoopStartForStoredChunk(bool looping, int loopStartBytes)
+    {
+        if (!looping)
+        {
+            return 0;
+        }
+
+        return Math.Max(InterSamplePaddingBytes, loopStartBytes + InterSamplePaddingBytes);
+    }
+}
+
 internal sealed class WdSampleEntry
 {
-    public WdSampleEntry(int index, int relativeOffset, byte[] rawBytes, float[] pcm, bool looping)
+    public WdSampleEntry(int index, int relativeOffset, byte[] rawBytes, float[] pcm)
     {
         Index = index;
         RelativeOffset = relativeOffset;
         RawBytes = rawBytes;
         Pcm = pcm;
-        Looping = looping;
     }
 
     public int Index { get; }
     public int RelativeOffset { get; }
     public byte[] RawBytes { get; }
     public float[] Pcm { get; }
-    public bool Looping { get; }
+    public bool Looping => Regions.Any(region => region.LoopStartBytes > 0) || ReplacementLoopStartBytes.GetValueOrDefault() > 0;
     public List<WdRegionEntry> Regions { get; } = new();
     public byte[]? ReplacementBytes { get; private set; }
     public int? ReplacementLoopStartBytes { get; private set; }
@@ -515,10 +563,14 @@ internal sealed record WdRegionEntry(
     bool Last,
     int KeyLow,
     int KeyHigh,
+    int VelocityLow,
+    int VelocityHigh,
     int UnityKey,
     int FineTuneCents,
     float Volume,
-    float Pan);
+    float Pan,
+    ushort Adsr1,
+    ushort Adsr2);
 
 internal static class PsxAdpcmDecoder
 {
@@ -530,7 +582,6 @@ internal static class PsxAdpcmDecoder
         var pcm = new float[(rawBytes.Length / 0x10) * 28];
         var previous1 = 0;
         var previous2 = 0;
-        var looping = false;
 
         for (var blockIndex = 0; blockIndex < rawBytes.Length / 0x10; blockIndex++)
         {
@@ -538,13 +589,9 @@ internal static class PsxAdpcmDecoder
             var predictorShift = rawBytes[blockOffset];
             var flag = rawBytes[blockOffset + 1];
             DecodeBlock(rawBytes.AsSpan(blockOffset + 2, 14), predictorShift, ref previous1, ref previous2, pcm.AsSpan(blockIndex * 28, 28));
-            if ((flag & 0x2) != 0)
-            {
-                looping = true;
-            }
         }
 
-        return new DecodedPsxSample(pcm, looping);
+        return new DecodedPsxSample(pcm);
     }
 
     private static void DecodeBlock(ReadOnlySpan<byte> source, byte predictorShift, ref int previous1, ref int previous2, Span<float> destination)
@@ -574,7 +621,7 @@ internal static class PsxAdpcmDecoder
     }
 }
 
-internal sealed record DecodedPsxSample(float[] Pcm, bool Looping);
+internal sealed record DecodedPsxSample(float[] Pcm);
 
 internal static class PsxAdpcmEncoder
 {
@@ -602,18 +649,16 @@ internal static class PsxAdpcmEncoder
                 LoadBlock(pcmSamples, blockIndex + 1, nextSource);
             }
 
-            var block = EncodeBlock(source, hasNextBlock ? nextSource : [], previous1, previous2);
+            var isSilentBlock = IsEffectivelySilentBlock(source);
+            var block = isSilentBlock
+                ? CreateSilentBlock()
+                : EncodeBlock(source, hasNextBlock ? nextSource : [], previous1, previous2);
             previous1 = block.LastSample1;
             previous2 = block.LastSample2;
 
             var outputOffset = blockIndex * 0x10;
             output[outputOffset] = (byte)((block.Filter << 4) | block.Shift);
-            var flag = 0;
-            if (looping && blockIndex > 0)
-            {
-                flag |= 0x2;
-            }
-
+            var flag = 0x2;
             if (blockIndex == blockCount - 1)
             {
                 flag |= 0x1;
@@ -627,6 +672,19 @@ internal static class PsxAdpcmEncoder
         }
 
         return output;
+    }
+
+    private static bool IsEffectivelySilentBlock(ReadOnlySpan<int> source)
+    {
+        for (var index = 0; index < source.Length; index++)
+        {
+            if (source[index] != 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static void LoadBlock(short[] pcmSamples, int blockIndex, Span<int> destination)
@@ -757,6 +815,11 @@ internal static class PsxAdpcmEncoder
         }
 
         return new EncodedPsxBlock(filter, shift, payload, sample1, sample2, error);
+    }
+
+    private static EncodedPsxBlock CreateSilentBlock()
+    {
+        return new EncodedPsxBlock(0, 12, new byte[14], 0, 0, 0);
     }
 }
 

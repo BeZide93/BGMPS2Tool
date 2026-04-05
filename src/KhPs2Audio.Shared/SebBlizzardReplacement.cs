@@ -189,9 +189,11 @@ public static class SebBlizzardReplacement
 
         var sampleChunks = new List<byte[]>(instrumentCount);
         sampleChunks.AddRange(originalInstrumentSamples);
-        sampleChunks.AddRange(authoredReplacements.OrderBy(static replacement => replacement.InstrumentIndex).Select(static replacement => replacement.ReplacementBytes));
+        sampleChunks.AddRange(authoredReplacements
+            .OrderBy(static replacement => replacement.InstrumentIndex)
+            .Select(static replacement => WdLayoutHelpers.CreateStoredSampleChunk(replacement.ReplacementBytes)));
 
-        var sampleBytesLength = sampleChunks.Sum(static chunk => chunk.Length);
+        var sampleBytesLength = WdLayoutHelpers.CalculateSampleSectionLength(sampleChunks);
         var output = new byte[sampleCollectionOffset + sampleBytesLength];
         Buffer.BlockCopy(bank.OriginalBytes, 0, output, 0, Math.Min(0x20, bank.OriginalBytes.Length));
         BinaryHelpers.WriteUInt32LE(output, 0x4, (uint)sampleBytesLength);
@@ -214,8 +216,10 @@ public static class SebBlizzardReplacement
             currentSampleOffset += sampleBytes.Length;
         }
 
-        foreach (var replacement in authoredReplacements.OrderBy(static replacement => replacement.InstrumentIndex))
+        var orderedReplacements = authoredReplacements.OrderBy(static replacement => replacement.InstrumentIndex).ToList();
+        for (var replacementIndex = 0; replacementIndex < orderedReplacements.Count; replacementIndex++)
         {
+            var replacement = orderedReplacements[replacementIndex];
             var regionOffset = regionTableOffset + (replacement.InstrumentIndex * 0x20);
             BinaryHelpers.WriteUInt32LE(output, 0x20 + (replacement.InstrumentIndex * 4), (uint)regionOffset);
 
@@ -232,11 +236,12 @@ public static class SebBlizzardReplacement
             regionBytes[0x17] = CenterPan;
             Buffer.BlockCopy(regionBytes, 0, output, regionOffset, regionBytes.Length);
 
-            Buffer.BlockCopy(replacement.ReplacementBytes, 0, output, sampleCollectionOffset + currentSampleOffset, replacement.ReplacementBytes.Length);
-            currentSampleOffset += replacement.ReplacementBytes.Length;
+            var storedReplacementBytes = sampleChunks[originalInstrumentCount + replacementIndex];
+            Buffer.BlockCopy(storedReplacementBytes, 0, output, sampleCollectionOffset + currentSampleOffset, storedReplacementBytes.Length);
+            currentSampleOffset += storedReplacementBytes.Length;
         }
 
-        log.WriteLine($"Authored isolated WD extension: {instrumentCount} instruments, {sampleBytesLength} bytes of PSX-ADPCM sample data.");
+        log.WriteLine($"Authored isolated WD extension: {instrumentCount} instruments, {sampleBytesLength} bytes of PSX-ADPCM sample data using KH2-style 16-byte zero lead-ins for each sample chunk.");
         return output;
     }
 

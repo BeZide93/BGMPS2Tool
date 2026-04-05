@@ -1,5 +1,119 @@
 # CHANGELOG
 
+## v0.6.23 - 2026-04-05
+
+### Fixed
+
+- MIDI/SF2 WD authoring now falls back to the best matching original template region per instrument when an exact region-layout match is not available
+- improved ADSR reuse for cases like `music152`, where a partial region-layout mismatch previously caused too many authored regions to fall back to the generic envelope
+
+## v0.6.22 - 2026-04-05
+
+### Fixed
+
+- MIDI/SF2 WD authoring now reuses the original PS2 ADSR values from the template `waveXXXX.wd` whenever the authored region layout matches the original region layout
+- improved sustained instrument fidelity for roundtrip-heavy cases like `music152`, where the original KH2 envelope shape is a better match than the generic SF2-to-PS2 ADSR approximation
+
+## v0.6.21 - 2026-04-05
+
+### Fixed
+
+- MIDI/SF2 looping samples are now prepared so their PS2 loop start lands on a clean ADPCM block boundary without simply truncating the original loop point downward
+- improved fidelity for short looping instrument samples where even a small loop-start shift could noticeably change the sustained timbre after `SF2 -> WD -> SF2`
+
+## v0.6.20 - 2026-04-05
+
+### Changed
+
+- MIDI/SF2 conversion now uses its own `sf2_volume` config key instead of reusing the global WAV `volume` setting
+
+### Fixed
+
+- prevented WAV-specific gain settings such as `volume=3.0` from unintentionally coloring `SF2 -> WD -> SF2` roundtrip tests and reducing fidelity for cases like `music152`
+
+## v0.6.19 - 2026-04-05
+
+### Changed
+
+- MIDI/SF2 conversion now writes a compact PS2 `BGM` containing only the conductor plus the actually generated playback tracks, instead of preserving every original silent track slot
+- generated MIDI playback tracks now stay in stable authored order in the compact `BGM` layout instead of being indirectly shaped by the original slot table
+
+### Fixed
+
+- improved `MID -> BGM -> MID` roundtrip fidelity for cases like `music152`, where VGMTrans should now see a track count much closer to the input MIDI instead of an inflated 22-track export caused by preserved silent KH2 slots
+
+## v0.6.18 - 2026-04-05
+
+### Changed
+
+- MIDI/SF2 conversion now authors the full SoundFont preset bank into the PS2 `WD` instead of only the presets directly used by the MIDI sequence
+
+### Fixed
+
+- improved `SF2 -> WD -> SF2` roundtrip fidelity for cases like `music152`, where VGMTrans should see the full authored bank rather than a minimal subset of only the active presets
+
+## v0.6.17 - 2026-04-05
+
+### Fixed
+
+- corrected authored `WD` files for sparse MIDI/SF2 program usage, so conversions that only reference a higher program number like `program 5` now write a valid KH2 instrument table instead of truncating the instrument count
+
+## v0.6.16 - 2026-04-05
+
+### Changed
+
+- MIDI/SF2 program mapping now preserves original program numbers as WD instrument indices whenever possible instead of compacting presets into a reordered instrument list
+- authored and parsed WD regions now carry velocity range metadata so future SF2 conversions can preserve velocity splits more faithfully when the source SoundFont actually uses them
+
+### Fixed
+
+- corrected cases where MIDI/SF2 conversions could sound like instruments were shuffled because program `n` was authored into a different WD instrument index than expected
+- improved internal WD region parsing/rendering consistency for authored velocity-aware regions
+
+## v0.6.15 - 2026-04-05
+
+### Changed
+
+- authored `WD` sample offsets now point to the KH2-style 16-byte zero lead-in that belongs to the next sample chunk instead of grouping that padding with the previous sample
+
+### Fixed
+
+- aligned multi-sample authored `WD` layout more closely with original KH2 sample spacing semantics
+- adjusted replacement-sample loop offsets so they stay correct when stored with the KH2-style 16-byte zero lead-in
+
+## v0.6.14 - 2026-04-05
+
+### Changed
+
+- authored PS2 ADPCM blocks now follow the KH2-style flag pattern more closely: `02` throughout the sample stream and `03` on the final block before the 16-byte separator
+- fully silent authored blocks are now emitted as KH2-style `0C 02` silent blocks inside the sample stream
+
+### Fixed
+
+- corrected cases where long silent regions inside authored samples appeared as raw zero-filled blocks instead of valid KH2-style silent sample blocks
+- stopped relying on the old internal assumption that ADPCM flag byte `02` directly means a logical loop
+
+## v0.6.13 - 2026-04-05
+
+### Changed
+
+- empty or fully silent authored PS2 ADPCM blocks are now written as KH2-style `0C 02` silent blocks instead of raw zero-filled blocks inside the sample stream
+
+### Fixed
+
+- improved compatibility with KH2-style sample layout expectations in long silent sections inside authored `WD` samples
+- reduced cases where large silent authored sample regions looked like detached raw zero data instead of valid PS2 sample blocks
+
+## v0.6.12 - 2026-04-05
+
+### Changed
+
+- authored multi-sample PS2 `WD` files now insert KH2-style 16-byte zero separators between sample chunks instead of packing all samples directly back-to-back
+
+### Fixed
+
+- improved layout compatibility of authored `WD` files with tools and workflows that expect the original KH2 sample spacing convention
+
 ## v0.6.11 - 2026-04-05
 
 ### Changed

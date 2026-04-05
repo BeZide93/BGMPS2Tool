@@ -5,7 +5,8 @@ namespace KhPs2Audio.Shared;
 public static class BgmMidiSf2Rebuilder
 {
     private const string ConfigFileName = "config.ini";
-    private const double DefaultVolume = 1.0;
+    private const string Sf2VolumeKey = "sf2_volume";
+    private const double DefaultSf2Volume = 1.0;
     private const ushort DefaultPpqn = 48;
     private const int MaxExpandedBgmGrowthBytes = 16 * 1024;
     private const double MaxExpandedBgmGrowthFactor = 2.0;
@@ -39,7 +40,7 @@ public static class BgmMidiSf2Rebuilder
         var wdPath = WdLocator.FindForBgm(bgmInfo)
             ?? throw new FileNotFoundException("No matching .wd file was found for the requested .bgm.", bgmPath);
 
-        var volume = LoadVolume(log);
+        var volume = LoadSf2Volume(log);
         var midi = MidiFileParser.Parse(inputMidiPath);
         var sf2Path = ResolveSoundFontPath(soundFontPath, assetDirectory, bgmInfo.BankId);
         var wdBank = WdBankFile.Load(wdPath);
@@ -171,16 +172,17 @@ public static class BgmMidiSf2Rebuilder
         }
     }
 
-    private static double LoadVolume(TextWriter log)
+    private static double LoadSf2Volume(TextWriter log)
     {
         var configPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
         if (!File.Exists(configPath))
         {
-            log.WriteLine($"Config: {ConfigFileName} not found next to the tool. Using default volume={DefaultVolume:0.###}.");
-            return DefaultVolume;
+            log.WriteLine($"Config: {ConfigFileName} not found next to the tool. Using default {Sf2VolumeKey}={DefaultSf2Volume:0.###} for MIDI/SF2 conversion.");
+            return DefaultSf2Volume;
         }
 
-        var volume = DefaultVolume;
+        var volume = DefaultSf2Volume;
+        var foundExplicitSf2Volume = false;
         foreach (var rawLine in File.ReadAllLines(configPath))
         {
             var line = rawLine.Trim();
@@ -196,7 +198,7 @@ public static class BgmMidiSf2Rebuilder
             }
 
             var key = line[..separatorIndex].Trim();
-            if (!key.Equals("volume", StringComparison.OrdinalIgnoreCase))
+            if (!key.Equals(Sf2VolumeKey, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -205,18 +207,28 @@ public static class BgmMidiSf2Rebuilder
             if (!double.TryParse(valueText, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out volume) &&
                 !double.TryParse(valueText.Replace(',', '.'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out volume))
             {
-                log.WriteLine($"Config warning: could not parse volume={valueText}. Using the current value.");
-                volume = DefaultVolume;
+                log.WriteLine($"Config warning: could not parse {Sf2VolumeKey}={valueText}. Using the current value.");
+                volume = DefaultSf2Volume;
             }
+
+            foundExplicitSf2Volume = true;
         }
 
         if (volume <= 0)
         {
-            log.WriteLine("Config warning: volume must be greater than 0. Using the default value.");
-            volume = DefaultVolume;
+            log.WriteLine($"Config warning: {Sf2VolumeKey} must be greater than 0. Using the default value.");
+            volume = DefaultSf2Volume;
         }
 
-        log.WriteLine($"Config: loaded {configPath} -> volume={volume:0.###}");
+        if (foundExplicitSf2Volume)
+        {
+            log.WriteLine($"Config: loaded {configPath} -> {Sf2VolumeKey}={volume:0.###}");
+        }
+        else
+        {
+            log.WriteLine($"Config: loaded {configPath} -> {Sf2VolumeKey} not set, using neutral {Sf2VolumeKey}={volume:0.###} for MIDI/SF2 conversion.");
+        }
+
         return volume;
     }
 
@@ -224,32 +236,37 @@ public static class BgmMidiSf2Rebuilder
     {
         var warnings = new HashSet<string>(soundFont.Warnings, StringComparer.Ordinal);
         var usedPresetRefs = GetUsedPresetRefs(midi);
-        var missingPresetRefs = new HashSet<PresetRef>();
-        var preferredVelocities = GetPreferredVelocities(midi);
         var programMap = new Dictionary<PresetRef, ProgramMapping>();
         var authoredSamples = new Dictionary<string, AuthoredSample>(StringComparer.Ordinal);
         var instruments = new List<AuthoredInstrument>();
-        var nextInstrumentIndex = 0;
+        var usedInstrumentIndices = new HashSet<int>();
+        var availablePresets = soundFont.Presets
+            .OrderBy(static preset => preset.Bank)
+            .ThenBy(static preset => preset.Program)
+            .ToList();
+        var availablePresetMap = availablePresets.ToDictionary(
+            static preset => new PresetRef(preset.Bank, preset.Program),
+            static preset => preset);
+        var missingPresetRefs = usedPresetRefs
+            .Where(presetRef => !availablePresetMap.ContainsKey(presetRef))
+            .OrderBy(static preset => preset.Bank)
+            .ThenBy(static preset => preset.Program)
+            .ToList();
 
-        foreach (var presetRef in usedPresetRefs)
+        if (missingPresetRefs.Count > 0)
         {
-            var preset = ResolvePreset(soundFont, presetRef, warnings, missingPresetRefs);
-            if (preset is null)
-            {
-                continue;
-            }
+            var missingList = string.Join(", ", missingPresetRefs.Select(static preset => $"{preset.Bank}/{preset.Program}"));
+            var availableList = string.Join(", ", availablePresets.Select(static preset => $"{preset.Bank}/{preset.Program}"));
+            throw new MissingSoundFontPresetException(missingList, availableList);
+        }
 
-            if (nextInstrumentIndex > byte.MaxValue)
-            {
-                throw new InvalidDataException("The converted MIDI references more than 256 unique SoundFont programs, which exceeds the PS2 BGM program limit.");
-            }
-
-            var preferredVelocity = preferredVelocities.TryGetValue(presetRef, out var mappedVelocity)
-                ? mappedVelocity
-                : 100;
-            var normalizedRegions = SoundFontParser.NormalizeRegions(preset.Regions, warnings, preferredVelocity);
+        foreach (var preset in availablePresets)
+        {
+            var presetRef = new PresetRef(preset.Bank, preset.Program);
+            var instrumentIndex = AllocateInstrumentIndex(presetRef, usedInstrumentIndices);
+            var normalizedRegions = SoundFontParser.NormalizeRegions(preset.Regions, warnings);
             var authoredRegions = new List<AuthoredRegion>();
-            foreach (var region in normalizedRegions.OrderBy(static region => region.KeyHigh))
+            foreach (var region in normalizedRegions.OrderBy(static region => region.KeyHigh).ThenBy(static region => region.VelocityHigh))
             {
                 var authoredSample = GetOrAddAuthoredSample(
                     authoredSamples,
@@ -266,6 +283,8 @@ public static class BgmMidiSf2Rebuilder
                     authoredSample,
                     region.KeyLow,
                     region.KeyHigh,
+                    region.VelocityLow,
+                    region.VelocityHigh,
                     region.RootKey,
                     region.FineTuneCents,
                     Math.Clamp(region.Volume, 0f, 1f),
@@ -288,6 +307,8 @@ public static class BgmMidiSf2Rebuilder
                         stereoSample,
                         region.KeyLow,
                         region.KeyHigh,
+                        region.VelocityLow,
+                        region.VelocityHigh,
                         region.RootKey,
                         region.FineTuneCents,
                         Math.Clamp(region.Volume, 0f, 1f),
@@ -297,18 +318,11 @@ public static class BgmMidiSf2Rebuilder
                 }
             }
 
-            var instrument = new AuthoredInstrument(nextInstrumentIndex, preset.Name, authoredRegions);
+            var instrument = new AuthoredInstrument(instrumentIndex, preset.Name, authoredRegions);
             instruments.Add(instrument);
-            programMap.Add(presetRef, new ProgramMapping((byte)nextInstrumentIndex, preset.Name, instrument.Regions.Count));
-            log.WriteLine($"Preset {presetRef.Bank}/{presetRef.Program} -> preferred velocity {preferredVelocity}, authored {instrument.Regions.Count} region(s).");
-            nextInstrumentIndex++;
-        }
-
-        if (missingPresetRefs.Count > 0)
-        {
-            var missingList = string.Join(", ", missingPresetRefs.OrderBy(static preset => preset.Bank).ThenBy(static preset => preset.Program).Select(static preset => $"{preset.Bank}/{preset.Program}"));
-            var availableList = string.Join(", ", soundFont.Presets.OrderBy(static preset => preset.Bank).ThenBy(static preset => preset.Program).Select(static preset => $"{preset.Bank}/{preset.Program}"));
-            throw new MissingSoundFontPresetException(missingList, availableList);
+            programMap.Add(presetRef, new ProgramMapping((byte)instrumentIndex, preset.Name, instrument.Regions.Count));
+            var usageLabel = usedPresetRefs.Contains(presetRef) ? "used" : "preserved";
+            log.WriteLine($"Preset {presetRef.Bank}/{presetRef.Program} -> instrument {instrumentIndex}, authored {instrument.Regions.Count} region(s), {usageLabel}.");
         }
 
         var channelPlans = BuildTrackPlans(midi, programMap, warnings);
@@ -319,7 +333,7 @@ public static class BgmMidiSf2Rebuilder
         }
 
         log.WriteLine($"MIDI analysis: format {midi.Format}, PPQN {midi.Division}, {midi.Tracks.Count} track(s).");
-        log.WriteLine($"SoundFont analysis: {soundFont.Presets.Count} preset(s), {instruments.Count} preset(s) referenced by the MIDI.");
+        log.WriteLine($"SoundFont analysis: {soundFont.Presets.Count} preset(s), {usedPresetRefs.Count} preset(s) referenced by the MIDI, {instruments.Count} preset(s) authored into the WD.");
         log.WriteLine($"Authored WD plan: {instruments.Count} instrument(s), {instruments.Sum(static instrument => instrument.Regions.Count)} region(s), {authoredSamples.Count} unique sample(s).");
 
         foreach (var warning in warnings.OrderBy(static warning => warning))
@@ -476,6 +490,24 @@ public static class BgmMidiSf2Rebuilder
         }
 
         return result;
+    }
+
+    private static int AllocateInstrumentIndex(PresetRef presetRef, HashSet<int> usedInstrumentIndices)
+    {
+        if (presetRef.Program is >= 0 and <= byte.MaxValue && usedInstrumentIndices.Add(presetRef.Program))
+        {
+            return presetRef.Program;
+        }
+
+        for (var index = 0; index <= byte.MaxValue; index++)
+        {
+            if (usedInstrumentIndices.Add(index))
+            {
+                return index;
+            }
+        }
+
+        throw new InvalidDataException("The converted MIDI references more than 256 unique SoundFont programs, which exceeds the PS2 BGM program limit.");
     }
 
     private static SoundFontPreset? ResolvePreset(
@@ -751,7 +783,9 @@ public static class BgmMidiSf2Rebuilder
         var templateRegionBytes = new byte[0x20];
         Buffer.BlockCopy(bank.OriginalBytes, bank.Regions[0].FileOffset, templateRegionBytes, 0, templateRegionBytes.Length);
 
-        var instrumentCount = plan.Instruments.Count;
+        var instrumentCount = plan.Instruments.Count == 0
+            ? 0
+            : plan.Instruments.Max(static instrument => instrument.Index) + 1;
         var totalRegions = plan.Instruments.Sum(static instrument => instrument.Regions.Count);
         var regionTableOffset = Align16(0x20 + (instrumentCount * 4));
         var sampleCollectionOffset = regionTableOffset + (totalRegions * 0x20);
@@ -761,7 +795,7 @@ public static class BgmMidiSf2Rebuilder
         foreach (var sample in plan.Samples)
         {
             sampleOffsetLookup.Add(sample.IdentityKey, sampleBytes.Count);
-            sampleBytes.AddRange(sample.EncodedBytes);
+            sampleBytes.AddRange(WdLayoutHelpers.CreateStoredSampleChunk(sample.EncodedBytes));
         }
 
         var output = new byte[sampleCollectionOffset + sampleBytes.Count];
@@ -772,9 +806,18 @@ public static class BgmMidiSf2Rebuilder
         BinaryHelpers.WriteUInt32LE(output, 0xC, (uint)totalRegions);
 
         var currentRegionOffset = regionTableOffset;
-        foreach (var instrument in plan.Instruments.OrderBy(static instrument => instrument.Index))
+        var instrumentByIndex = plan.Instruments.ToDictionary(static instrument => instrument.Index);
+        var templateRegionsByInstrument = bank.Regions
+            .GroupBy(static region => region.InstrumentIndex)
+            .ToDictionary(static group => group.Key, static group => group.OrderBy(region => region.RegionIndex).ToList());
+        for (var instrumentIndex = 0; instrumentIndex < instrumentCount; instrumentIndex++)
         {
-            BinaryHelpers.WriteUInt32LE(output, 0x20 + (instrument.Index * 4), (uint)currentRegionOffset);
+            BinaryHelpers.WriteUInt32LE(output, 0x20 + (instrumentIndex * 4), (uint)currentRegionOffset);
+            if (!instrumentByIndex.TryGetValue(instrumentIndex, out var instrument))
+            {
+                continue;
+            }
+
             for (var regionIndex = 0; regionIndex < instrument.Regions.Count; regionIndex++)
             {
                 var region = instrument.Regions[regionIndex];
@@ -785,14 +828,15 @@ public static class BgmMidiSf2Rebuilder
                 regionBytes[0x01] = (byte)((regionIndex == 0 ? 0x01 : 0x00) | (regionIndex == instrument.Regions.Count - 1 ? 0x02 : 0x00));
                 BinaryHelpers.WriteUInt32LE(output, 0x20 + (instrument.Index * 4), (uint)(currentRegionOffset - (regionIndex * 0x20)));
                 BinaryHelpers.WriteUInt32LE(regionBytes, 0x04, (uint)sampleOffsetLookup[region.Sample.IdentityKey]);
-                BinaryHelpers.WriteUInt32LE(regionBytes, 0x08, (uint)(region.Sample.Looping ? region.Sample.LoopStartBytes : 0));
-                BinaryHelpers.WriteUInt16LE(regionBytes, 0x0E, region.Envelope.Adsr1);
-                BinaryHelpers.WriteUInt16LE(regionBytes, 0x10, region.Envelope.Adsr2);
+                BinaryHelpers.WriteUInt32LE(regionBytes, 0x08, (uint)WdLayoutHelpers.OffsetLoopStartForStoredChunk(region.Sample.Looping, region.Sample.LoopStartBytes));
+                var adsr = ResolveEnvelope(templateRegionsByInstrument, instrument, region, regionIndex);
+                BinaryHelpers.WriteUInt16LE(regionBytes, 0x0E, adsr.Adsr1);
+                BinaryHelpers.WriteUInt16LE(regionBytes, 0x10, adsr.Adsr2);
                 EncodeRootNote(region.RootKey + (region.FineTuneCents / 100.0), out var fineTune, out var unityKey);
                 regionBytes[0x12] = fineTune;
                 regionBytes[0x13] = unityKey;
                 regionBytes[0x14] = (byte)Math.Clamp(region.KeyHigh, 0, 127);
-                regionBytes[0x15] = 0x7F;
+                regionBytes[0x15] = (byte)Math.Clamp(region.VelocityHigh, 0, 127);
                 regionBytes[0x16] = (byte)Math.Clamp((int)Math.Round(region.Volume * 127.0, MidpointRounding.AwayFromZero), 0, 127);
                 regionBytes[0x17] = EncodeWdPan(region.Pan);
                 regionBytes[0x18] = region.Sample.Looping ? (byte)0x02 : (byte)0x00;
@@ -803,8 +847,32 @@ public static class BgmMidiSf2Rebuilder
         }
 
         sampleBytes.ToArray().CopyTo(output, sampleCollectionOffset);
-        log.WriteLine($"Authored WD from MIDI+SF2: {instrumentCount} instrument(s), {totalRegions} region(s), {sampleBytes.Count} bytes of PSX-ADPCM sample data.");
+        log.WriteLine($"Authored WD from MIDI+SF2: {instrumentCount} instrument(s), {totalRegions} region(s), {sampleBytes.Count} bytes of PSX-ADPCM sample data using KH2-style 16-byte zero lead-ins for each sample chunk.");
         return output;
+    }
+
+    private static AdsrEnvelope ResolveEnvelope(
+        IReadOnlyDictionary<int, List<WdRegionEntry>> templateRegionsByInstrument,
+        AuthoredInstrument instrument,
+        AuthoredRegion region,
+        int regionIndex)
+    {
+        if (templateRegionsByInstrument.TryGetValue(instrument.Index, out var templateRegions) &&
+            regionIndex >= 0 &&
+            regionIndex < templateRegions.Count)
+        {
+            var template = templateRegions[regionIndex];
+            if (template.KeyLow == region.KeyLow &&
+                template.KeyHigh == region.KeyHigh &&
+                template.VelocityLow == region.VelocityLow &&
+                template.VelocityHigh == region.VelocityHigh &&
+                template.Stereo == region.Stereo)
+            {
+                return new AdsrEnvelope(template.Adsr1, template.Adsr2);
+            }
+        }
+
+        return region.Envelope;
     }
 
     private static byte[] BuildBgm(string originalBgmPath, int sequenceId, int bankId, MidiFile midi, ConversionPlan plan, TextWriter log)
@@ -822,10 +890,11 @@ public static class BgmMidiSf2Rebuilder
             targetPpqn = DefaultPpqn;
         }
 
-        if (plan.TrackPlans.Count + 1 > templateTrackCount)
+        var activeTrackCount = plan.TrackPlans.Count + 1;
+        if (activeTrackCount > templateTrackCount)
         {
             throw new InvalidDataException(
-                $"The MIDI requires {plan.TrackPlans.Count + 1} BGM tracks including conductor, but the original file only exposes {templateTrackCount} track slots.");
+                $"The MIDI requires {activeTrackCount} BGM tracks including conductor, but the original file only exposes {templateTrackCount} track slots.");
         }
 
         var conductorTrack = BuildConductorTrack(midi, targetPpqn);
@@ -834,37 +903,17 @@ public static class BgmMidiSf2Rebuilder
             .ToList();
 
         var trackLayout = ReadTrackLayout(templateBytes, templateTrackCount);
-        var trackBytesBySlot = new byte[templateTrackCount][];
-        var slotLengths = trackLayout.Select(static layout => layout.Length).ToArray();
+        var trackBytesBySlot = new byte[activeTrackCount][];
+        var slotLengths = new int[activeTrackCount];
         trackBytesBySlot[0] = conductorTrack;
-        slotLengths[0] = Math.Max(slotLengths[0], conductorTrack.Length);
+        slotLengths[0] = Math.Max(trackLayout[0].Length, conductorTrack.Length);
 
-        var availableSlots = Enumerable.Range(1, trackLayout.Count - 1)
-            .Select(index => new AvailableTrackSlot(index, trackLayout[index]))
-            .OrderByDescending(slot => slot.Layout.Length)
-            .ToList();
-        var sortedGeneratedTracks = generatedPlaybackTracks
-            .OrderByDescending(track => track.Bytes.Length)
-            .ToList();
-
-        if (sortedGeneratedTracks.Count > availableSlots.Count)
+        for (var trackIndex = 0; trackIndex < generatedPlaybackTracks.Count; trackIndex++)
         {
-            throw new InvalidDataException("The MIDI produced more playback tracks than the original PS2 BGM can hold.");
-        }
-
-        for (var i = 0; i < sortedGeneratedTracks.Count; i++)
-        {
-            var track = sortedGeneratedTracks[i];
-            var slot = availableSlots[i];
-            trackBytesBySlot[slot.Index] = track.Bytes;
-            slotLengths[slot.Index] = Math.Max(slotLengths[slot.Index], track.Bytes.Length);
-        }
-
-        var silentTrack = BuildSilentTrack();
-        foreach (var unusedSlot in availableSlots.Skip(sortedGeneratedTracks.Count))
-        {
-            trackBytesBySlot[unusedSlot.Index] = silentTrack;
-            slotLengths[unusedSlot.Index] = Math.Max(slotLengths[unusedSlot.Index], silentTrack.Length);
+            var generatedTrack = generatedPlaybackTracks[trackIndex];
+            var outputIndex = trackIndex + 1;
+            trackBytesBySlot[outputIndex] = generatedTrack.Bytes;
+            slotLengths[outputIndex] = Math.Max(trackLayout[outputIndex].Length, generatedTrack.Bytes.Length);
         }
 
         var needsExpansion = slotLengths.Where((length, index) => length > trackLayout[index].Length).Any();
@@ -872,12 +921,15 @@ public static class BgmMidiSf2Rebuilder
         var maxAllowedLength = CalculateMaxAllowedBgmLength(templateBytes.Length);
         if (needsExpansion && outputLength > maxAllowedLength)
         {
-            var largestGeneratedTrack = sortedGeneratedTracks.FirstOrDefault();
-            var largestOriginalSlot = availableSlots.FirstOrDefault();
-            if (largestGeneratedTrack is not null && largestOriginalSlot is not null)
+            var largestGeneratedTrack = generatedPlaybackTracks
+                .OrderByDescending(track => track.Bytes.Length)
+                .FirstOrDefault();
+            if (largestGeneratedTrack is not null)
             {
+                var trackSlotIndex = generatedPlaybackTracks.IndexOf(largestGeneratedTrack) + 1;
+                var originalSlotLength = trackLayout[trackSlotIndex].Length;
                 throw new InvalidDataException(
-                    $"The MIDI track '{largestGeneratedTrack.Name}' (channel {largestGeneratedTrack.Channel + 1}) needs {largestGeneratedTrack.Bytes.Length} bytes, but the largest available original BGM track slot only has {largestOriginalSlot.Layout.Length} bytes. " +
+                    $"The MIDI track '{largestGeneratedTrack.Name}' (channel {largestGeneratedTrack.Channel + 1}) needs {largestGeneratedTrack.Bytes.Length} bytes, but its corresponding compact BGM track slot only has {originalSlotLength} bytes in the template. " +
                     $"A safe expanded rebuild is capped at {maxAllowedLength} bytes, while this MIDI would require {outputLength} bytes.");
             }
 
@@ -888,18 +940,18 @@ public static class BgmMidiSf2Rebuilder
         Buffer.BlockCopy(templateBytes, 0, output, 0, Math.Min(0x20, templateBytes.Length));
         BinaryHelpers.WriteUInt16LE(output, 0x04, (ushort)sequenceId);
         BinaryHelpers.WriteUInt16LE(output, 0x06, (ushort)bankId);
-        BinaryHelpers.WriteUInt16LE(output, 0x08, (ushort)templateTrackCount);
+        BinaryHelpers.WriteUInt16LE(output, 0x08, (ushort)activeTrackCount);
         BinaryHelpers.WriteUInt16LE(output, 0x0E, targetPpqn);
         BinaryHelpers.WriteUInt32LE(output, 0x10, (uint)output.Length);
 
         var cursor = 0x20;
-        for (var trackIndex = 0; trackIndex < templateTrackCount; trackIndex++)
+        for (var trackIndex = 0; trackIndex < activeTrackCount; trackIndex++)
         {
             var slotLength = slotLengths[trackIndex];
             BinaryHelpers.WriteUInt32LE(output, cursor, (uint)slotLength);
             cursor += 4;
 
-            var trackBytes = trackBytesBySlot[trackIndex] ?? silentTrack;
+            var trackBytes = trackBytesBySlot[trackIndex] ?? Array.Empty<byte>();
             if (trackBytes.Length > slotLength)
             {
                 throw new InvalidDataException(
@@ -914,7 +966,7 @@ public static class BgmMidiSf2Rebuilder
             ? $"expanded from {templateBytes.Length} to {output.Length} bytes"
             : $"in-place at {output.Length} bytes";
         log.WriteLine(
-            $"Authored BGM conservative rebuild: preserved {templateTrackCount} original track slot(s), {generatedPlaybackTracks.Count + 1} generated track(s), target PPQN {targetPpqn}, {rebuildMode}.");
+            $"Authored BGM compact rebuild: wrote {activeTrackCount} track(s) (1 conductor + {generatedPlaybackTracks.Count} playback), target PPQN {targetPpqn}, {rebuildMode}.");
         return output;
     }
 
@@ -1188,19 +1240,64 @@ public static class BgmMidiSf2Rebuilder
         }
 
         var adjustedPcm = ApplyVolume(pcm, volume);
+        var prepared = PrepareLoopAlignedSample(adjustedPcm, looping, loopStartSample);
         var encoded = PsxAdpcmEncoder.Encode(
-            adjustedPcm,
-            looping,
-            looping ? SamplesToLoopStartBytes(loopStartSample) : 0);
+            prepared.Pcm,
+            prepared.Looping,
+            prepared.Looping ? SamplesToLoopStartBytes(prepared.LoopStartSample) : 0);
         authoredSample = new AuthoredSample(
             identityKey,
             sourceSampleName,
-            adjustedPcm,
+            prepared.Pcm,
             encoded,
-            looping,
-            looping ? SamplesToLoopStartBytes(loopStartSample) : 0);
+            prepared.Looping,
+            prepared.Looping ? SamplesToLoopStartBytes(prepared.LoopStartSample) : 0);
         authoredSamples.Add(identityKey, authoredSample);
         return authoredSample;
+    }
+
+    private static PreparedLoopSample PrepareLoopAlignedSample(short[] pcm, bool looping, int loopStartSample)
+    {
+        if (!looping || pcm.Length == 0)
+        {
+            return new PreparedLoopSample(pcm, looping, 0);
+        }
+
+        var safeLoopStart = Math.Clamp(loopStartSample, 0, Math.Max(0, pcm.Length - 1));
+        var remainder = safeLoopStart % 28;
+        if (remainder == 0)
+        {
+            return new PreparedLoopSample(pcm, true, safeLoopStart);
+        }
+
+        var padCount = 28 - remainder;
+        var availableLoopSamples = Math.Max(0, pcm.Length - safeLoopStart);
+        if (availableLoopSamples == 0)
+        {
+            return new PreparedLoopSample(pcm, true, safeLoopStart - remainder);
+        }
+
+        var inserted = new short[pcm.Length + padCount];
+        if (safeLoopStart > 0)
+        {
+            Buffer.BlockCopy(pcm, 0, inserted, 0, safeLoopStart * sizeof(short));
+        }
+
+        var bytesPerSample = sizeof(short);
+        for (var index = 0; index < padCount; index++)
+        {
+            inserted[safeLoopStart + index] = pcm[safeLoopStart + (index % availableLoopSamples)];
+        }
+
+        var tailLength = pcm.Length - safeLoopStart;
+        Buffer.BlockCopy(
+            pcm,
+            safeLoopStart * bytesPerSample,
+            inserted,
+            (safeLoopStart + padCount) * bytesPerSample,
+            tailLength * bytesPerSample);
+
+        return new PreparedLoopSample(inserted, true, safeLoopStart + padCount);
     }
 
     private static float GetStereoLeftPan(float basePan)
@@ -1513,6 +1610,8 @@ internal sealed record AuthoredRegion(
     AuthoredSample Sample,
     int KeyLow,
     int KeyHigh,
+    int VelocityLow,
+    int VelocityHigh,
     int RootKey,
     int FineTuneCents,
     float Volume,
@@ -1570,6 +1669,8 @@ internal sealed record MidiSf2TrackManifest(int Channel, string Name, int EventC
 internal sealed record MidiSf2ProgramManifest(int Bank, int Program, byte InstrumentIndex, string PresetName, int RegionCount);
 
 internal sealed record GeneratedTrack(int Channel, string Name, byte[] Bytes);
+
+internal sealed record PreparedLoopSample(short[] Pcm, bool Looping, int LoopStartSample);
 
 internal sealed record TrackLayout(int Start, int Length);
 
