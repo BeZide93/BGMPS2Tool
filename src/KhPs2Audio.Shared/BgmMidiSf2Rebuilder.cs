@@ -8,6 +8,7 @@ public static class BgmMidiSf2Rebuilder
     private const string Sf2VolumeKey = "sf2_volume";
     private const double DefaultSf2Volume = 1.0;
     private const ushort DefaultPpqn = 48;
+    private const int MaxAuthoredWdBytes = 980 * 1024;
     private const int MaxExpandedBgmGrowthBytes = 16 * 1024;
     private const double MaxExpandedBgmGrowthFactor = 2.0;
     private const int SpuSampleRate = 44100;
@@ -54,6 +55,7 @@ public static class BgmMidiSf2Rebuilder
             {
                 var soundFont = SoundFontParser.Parse(sf2Path);
                 plan = BuildPlan(midi, soundFont, volume, log);
+                plan = ConstrainPlanToWdBudget(plan, MaxAuthoredWdBytes, log);
                 outputWd = BuildWd(wdPath, bgmInfo.BankId, plan, log);
                 programSourceLabel = Path.GetFileName(sf2Path);
             }
@@ -329,7 +331,7 @@ public static class BgmMidiSf2Rebuilder
 
         if (midi.Tracks.SelectMany(static track => track.Events).OfType<MidiPitchBendEvent>().Any())
         {
-            warnings.Add("Pitch-bend events are currently ignored because the KH2 BGM pitch opcode mapping is not known yet.");
+            warnings.Add("Pitch-bend events are approximated by bend-aware note retargeting. Continuous bends are not yet emitted as native KH2 pitch opcodes.");
         }
 
         log.WriteLine($"MIDI analysis: format {midi.Format}, PPQN {midi.Division}, {midi.Tracks.Count} track(s).");
@@ -347,6 +349,49 @@ public static class BgmMidiSf2Rebuilder
             programMap,
             channelPlans,
             warnings.OrderBy(static warning => warning).ToList());
+    }
+
+    private static ConversionPlan ConstrainPlanToWdBudget(ConversionPlan plan, int maxWdBytes, TextWriter log)
+    {
+        if (plan.Samples.Count == 0)
+        {
+            return plan;
+        }
+
+        var currentTotalBytes = EstimateWdSizeBytes(plan);
+        if (currentTotalBytes <= maxWdBytes)
+        {
+            return plan;
+        }
+
+        var currentSampleBytes = EstimateStoredSampleBytes(plan.Samples);
+        var fixedBytes = currentTotalBytes - currentSampleBytes;
+        var availableSampleBytes = maxWdBytes - fixedBytes;
+        if (availableSampleBytes <= 0)
+        {
+            throw new InvalidDataException(
+                $"The authored WD layout needs {fixedBytes} bytes before sample data, which already exceeds the configured maximum WD size of {maxWdBytes} bytes.");
+        }
+
+        var scale = Math.Clamp((availableSampleBytes / (double)currentSampleBytes) * 0.985, 0.05, 1.0);
+        ConversionPlan constrainedPlan = plan;
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            constrainedPlan = ResamplePlanSamples(constrainedPlan, scale);
+            currentTotalBytes = EstimateWdSizeBytes(constrainedPlan);
+            if (currentTotalBytes <= maxWdBytes)
+            {
+                log.WriteLine(
+                    $"WD size guard: resampled authored SF2 content to an effective {Math.Round(SpuSampleRate * scale)} Hz budget so the rebuilt WD stays within {maxWdBytes} bytes.");
+                return constrainedPlan;
+            }
+
+            var constrainedSampleBytes = EstimateStoredSampleBytes(constrainedPlan.Samples);
+            scale *= Math.Clamp((availableSampleBytes / (double)constrainedSampleBytes) * 0.99, 0.5, 0.99);
+        }
+
+        throw new InvalidDataException(
+            $"The authored WD would still exceed the maximum size of {maxWdBytes} bytes even after conservative sample-rate reduction.");
     }
 
     private static ConversionPlan BuildPlanFromOriginalWd(MidiFile midi, WdBankFile bank, TextWriter log)
@@ -578,7 +623,11 @@ public static class BgmMidiSf2Rebuilder
             int? emittedExpression = null;
             int? emittedPan = null;
             var sustainDown = false;
-            var deferredNoteOffs = new HashSet<int>();
+            var activeNotes = new List<ActiveChannelNote>();
+            var currentPitchBend = 0;
+            var rpnMsb = 127;
+            var rpnLsb = 127;
+            var bendRangeSemitones = 2.0;
             var trackName = midi.Tracks.FirstOrDefault(track => track.Events.Any(evt => evt.Channel == channel))?.Name ?? $"Channel {channel + 1}";
 
             foreach (var evt in events)
@@ -590,6 +639,26 @@ public static class BgmMidiSf2Rebuilder
                         break;
                     case MidiControlChangeEvent control when control.Controller == 32:
                         bankLsb = control.Value;
+                        break;
+                    case MidiControlChangeEvent control when control.Controller == 100:
+                        rpnLsb = control.Value;
+                        break;
+                    case MidiControlChangeEvent control when control.Controller == 101:
+                        rpnMsb = control.Value;
+                        break;
+                    case MidiControlChangeEvent control when control.Controller == 6:
+                        if (rpnMsb == 0 && rpnLsb == 0)
+                        {
+                            bendRangeSemitones = Math.Clamp(control.Value, 0, 24);
+                        }
+
+                        break;
+                    case MidiControlChangeEvent control when control.Controller == 38:
+                        if (rpnMsb == 0 && rpnLsb == 0)
+                        {
+                            bendRangeSemitones = Math.Clamp(Math.Truncate(bendRangeSemitones) + (Math.Clamp(control.Value, 0, 99) / 100.0), 0, 24);
+                        }
+
                         break;
                     case MidiProgramChangeEvent programChange:
                         currentProgram = programChange.Program;
@@ -609,7 +678,7 @@ public static class BgmMidiSf2Rebuilder
                         break;
                     case MidiControlChangeEvent control when control.Controller == 7:
                     {
-                        var mappedVolume = MapMidiAttenuationController(control.Value);
+                        var mappedVolume = MapMidiVolumeController(control.Value);
                         if (emittedVolume != mappedVolume)
                         {
                             authoredEvents.Add(new AuthoredVolumeEvent(control.Tick, mappedVolume));
@@ -628,7 +697,7 @@ public static class BgmMidiSf2Rebuilder
                         break;
                     case MidiControlChangeEvent control when control.Controller == 11:
                     {
-                        var mappedExpression = MapMidiAttenuationController(control.Value);
+                        var mappedExpression = MapMidiExpressionController(control.Value);
                         if (emittedExpression != mappedExpression)
                         {
                             authoredEvents.Add(new AuthoredExpressionEvent(control.Tick, mappedExpression));
@@ -645,30 +714,37 @@ public static class BgmMidiSf2Rebuilder
                         else
                         {
                             sustainDown = false;
-                            foreach (var key in deferredNoteOffs.OrderBy(static value => value))
+                            foreach (var deferred in activeNotes.Where(static note => note.DeferredRelease).OrderBy(static note => note.SourceKey).ToList())
                             {
-                                authoredEvents.Add(new AuthoredNoteOffEvent(control.Tick, key));
+                                authoredEvents.Add(new AuthoredNoteOffEvent(control.Tick, deferred.EmittedKey));
+                                activeNotes.Remove(deferred);
                             }
-
-                            deferredNoteOffs.Clear();
                         }
 
                         break;
                     case MidiNoteOffEvent noteOff:
-                        if (sustainDown)
-                        {
-                            deferredNoteOffs.Add(noteOff.Key);
-                        }
-                        else
+                    {
+                        var activeNote = FindActiveNote(activeNotes, noteOff.Key);
+                        if (activeNote is null)
                         {
                             authoredEvents.Add(new AuthoredNoteOffEvent(noteOff.Tick, noteOff.Key));
                         }
-
-                        break;
-                    case MidiNoteOnEvent noteOn:
-                        if (deferredNoteOffs.Remove(noteOn.Key))
+                        else if (sustainDown)
                         {
-                            authoredEvents.Add(new AuthoredNoteOffEvent(noteOn.Tick, noteOn.Key));
+                            activeNote.DeferredRelease = true;
+                        }
+                        else
+                        {
+                            authoredEvents.Add(new AuthoredNoteOffEvent(noteOff.Tick, activeNote.EmittedKey));
+                            activeNotes.Remove(activeNote);
+                        }
+                        break;
+                    }
+                    case MidiNoteOnEvent noteOn:
+                        foreach (var deferred in activeNotes.Where(note => note.SourceKey == noteOn.Key && note.DeferredRelease).ToList())
+                        {
+                            authoredEvents.Add(new AuthoredNoteOffEvent(noteOn.Tick, deferred.EmittedKey));
+                            activeNotes.Remove(deferred);
                         }
 
                         if (TryResolveProgram(programMap, bankMsb, bankLsb, currentProgram, out var noteProgram) && emittedProgram != noteProgram)
@@ -679,19 +755,42 @@ public static class BgmMidiSf2Rebuilder
 
                         if (emittedProgram.HasValue)
                         {
-                            authoredEvents.Add(new AuthoredNoteOnEvent(noteOn.Tick, noteOn.Key, noteOn.Velocity));
+                            var bentKey = ApplyPitchBendToKey(noteOn.Key, currentPitchBend, bendRangeSemitones);
+                            authoredEvents.Add(new AuthoredNoteOnEvent(noteOn.Tick, bentKey, noteOn.Velocity));
+                            activeNotes.Add(new ActiveChannelNote(noteOn.Key, bentKey, noteOn.Velocity));
+                        }
+
+                        break;
+                    case MidiPitchBendEvent pitchBend:
+                        currentPitchBend = pitchBend.Value;
+                        if (!emittedProgram.HasValue || activeNotes.Count == 0)
+                        {
+                            break;
+                        }
+
+                        foreach (var activeNote in activeNotes)
+                        {
+                            var bentKey = ApplyPitchBendToKey(activeNote.SourceKey, currentPitchBend, bendRangeSemitones);
+                            if (bentKey == activeNote.EmittedKey)
+                            {
+                                continue;
+                            }
+
+                            authoredEvents.Add(new AuthoredNoteOffEvent(pitchBend.Tick, activeNote.EmittedKey));
+                            authoredEvents.Add(new AuthoredNoteOnEvent(pitchBend.Tick, bentKey, activeNote.Velocity));
+                            activeNote.EmittedKey = bentKey;
                         }
 
                         break;
                 }
             }
 
-            if (deferredNoteOffs.Count > 0)
+            if (activeNotes.Count > 0)
             {
                 var releaseTick = authoredEvents.Count == 0 ? 0 : authoredEvents.Max(static evt => evt.Tick);
-                foreach (var key in deferredNoteOffs.OrderBy(static value => value))
+                foreach (var activeNote in activeNotes.OrderBy(static note => note.SourceKey))
                 {
-                    authoredEvents.Add(new AuthoredNoteOffEvent(releaseTick, key));
+                    authoredEvents.Add(new AuthoredNoteOffEvent(releaseTick, activeNote.EmittedKey));
                 }
             }
 
@@ -731,6 +830,39 @@ public static class BgmMidiSf2Rebuilder
             AuthoredNoteOnEvent => 5,
             _ => 10,
         };
+    }
+
+    private static ActiveChannelNote? FindActiveNote(List<ActiveChannelNote> activeNotes, int sourceKey)
+    {
+        for (var index = activeNotes.Count - 1; index >= 0; index--)
+        {
+            var activeNote = activeNotes[index];
+            if (activeNote.SourceKey == sourceKey && !activeNote.DeferredRelease)
+            {
+                return activeNote;
+            }
+        }
+
+        for (var index = activeNotes.Count - 1; index >= 0; index--)
+        {
+            var activeNote = activeNotes[index];
+            if (activeNote.SourceKey == sourceKey)
+            {
+                return activeNote;
+            }
+        }
+
+        return null;
+    }
+
+    private static int ApplyPitchBendToKey(int sourceKey, int pitchBendValue, double bendRangeSemitones)
+    {
+        var clampedBend = Math.Clamp(pitchBendValue, -8192, 8191);
+        var normalized = clampedBend >= 0
+            ? clampedBend / 8191.0
+            : clampedBend / 8192.0;
+        var bentKey = sourceKey + (normalized * bendRangeSemitones);
+        return Math.Clamp((int)Math.Round(bentKey, MidpointRounding.AwayFromZero), 0, 127);
     }
 
     private static bool TryResolveProgram(
@@ -780,8 +912,6 @@ public static class BgmMidiSf2Rebuilder
 
         var templateHeader = new byte[Math.Min(0x20, bank.OriginalBytes.Length)];
         Buffer.BlockCopy(bank.OriginalBytes, 0, templateHeader, 0, templateHeader.Length);
-        var templateRegionBytes = new byte[0x20];
-        Buffer.BlockCopy(bank.OriginalBytes, bank.Regions[0].FileOffset, templateRegionBytes, 0, templateRegionBytes.Length);
 
         var instrumentCount = plan.Instruments.Count == 0
             ? 0
@@ -821,15 +951,19 @@ public static class BgmMidiSf2Rebuilder
             for (var regionIndex = 0; regionIndex < instrument.Regions.Count; regionIndex++)
             {
                 var region = instrument.Regions[regionIndex];
+                var templateRegion = SelectTemplateRegion(templateRegionsByInstrument, instrument, region, regionIndex);
                 var regionBytes = new byte[0x20];
-                Buffer.BlockCopy(templateRegionBytes, 0, regionBytes, 0, regionBytes.Length);
+                var templateRegionOffset = templateRegion?.FileOffset ?? bank.Regions[0].FileOffset;
+                Buffer.BlockCopy(bank.OriginalBytes, templateRegionOffset, regionBytes, 0, regionBytes.Length);
 
                 regionBytes[0x00] = region.Stereo ? (byte)0x01 : (byte)0x00;
                 regionBytes[0x01] = (byte)((regionIndex == 0 ? 0x01 : 0x00) | (regionIndex == instrument.Regions.Count - 1 ? 0x02 : 0x00));
                 BinaryHelpers.WriteUInt32LE(output, 0x20 + (instrument.Index * 4), (uint)(currentRegionOffset - (regionIndex * 0x20)));
                 BinaryHelpers.WriteUInt32LE(regionBytes, 0x04, (uint)sampleOffsetLookup[region.Sample.IdentityKey]);
                 BinaryHelpers.WriteUInt32LE(regionBytes, 0x08, (uint)WdLayoutHelpers.OffsetLoopStartForStoredChunk(region.Sample.Looping, region.Sample.LoopStartBytes));
-                var adsr = ResolveEnvelope(templateRegionsByInstrument, instrument, region, regionIndex);
+                var adsr = templateRegion is not null
+                    ? new AdsrEnvelope(templateRegion.Adsr1, templateRegion.Adsr2)
+                    : region.Envelope;
                 BinaryHelpers.WriteUInt16LE(regionBytes, 0x0E, adsr.Adsr1);
                 BinaryHelpers.WriteUInt16LE(regionBytes, 0x10, adsr.Adsr2);
                 EncodeRootNote(region.RootKey + (region.FineTuneCents / 100.0), out var fineTune, out var unityKey);
@@ -851,28 +985,146 @@ public static class BgmMidiSf2Rebuilder
         return output;
     }
 
-    private static AdsrEnvelope ResolveEnvelope(
+    private static int EstimateWdSizeBytes(ConversionPlan plan)
+    {
+        var instrumentCount = plan.Instruments.Count == 0
+            ? 0
+            : plan.Instruments.Max(static instrument => instrument.Index) + 1;
+        var totalRegions = plan.Instruments.Sum(static instrument => instrument.Regions.Count);
+        var regionTableOffset = Align16(0x20 + (instrumentCount * 4));
+        var sampleCollectionOffset = regionTableOffset + (totalRegions * 0x20);
+        return sampleCollectionOffset + EstimateStoredSampleBytes(plan.Samples);
+    }
+
+    private static int EstimateStoredSampleBytes(IEnumerable<AuthoredSample> samples)
+        => samples.Sum(static sample => WdLayoutHelpers.CreateStoredSampleChunk(sample.EncodedBytes).Length);
+
+    private static ConversionPlan ResamplePlanSamples(ConversionPlan plan, double scale)
+    {
+        var targetRate = Math.Clamp((int)Math.Round(SpuSampleRate * scale, MidpointRounding.AwayFromZero), 4_000, SpuSampleRate);
+        if (targetRate == SpuSampleRate)
+        {
+            return plan;
+        }
+
+        var pitchSemitones = 12.0 * Math.Log(SpuSampleRate / (double)targetRate, 2.0);
+        var sampleMap = new Dictionary<string, AuthoredSample>(StringComparer.Ordinal);
+        foreach (var sample in plan.Samples)
+        {
+            var loopStartSamples = sample.Looping ? LoopStartBytesToSamples(sample.LoopStartBytes) : 0;
+            var resampledPcm = AudioDsp.ResampleMono(sample.Pcm, SpuSampleRate, targetRate);
+            var resampledLoopStart = sample.Looping
+                ? Math.Clamp((int)Math.Round(loopStartSamples * (targetRate / (double)SpuSampleRate), MidpointRounding.AwayFromZero), 0, Math.Max(0, resampledPcm.Length - 1))
+                : 0;
+            var prepared = PrepareLoopAlignedSample(resampledPcm, sample.Looping, resampledLoopStart);
+            var encoded = PsxAdpcmEncoder.Encode(
+                prepared.Pcm,
+                prepared.Looping,
+                prepared.Looping ? SamplesToLoopStartBytes(prepared.LoopStartSample) : 0);
+            sampleMap[sample.IdentityKey] = sample with
+            {
+                Pcm = prepared.Pcm,
+                EncodedBytes = encoded,
+                LoopStartBytes = prepared.Looping ? SamplesToLoopStartBytes(prepared.LoopStartSample) : 0,
+            };
+        }
+
+        var instruments = plan.Instruments
+            .Select(instrument => new AuthoredInstrument(
+                instrument.Index,
+                instrument.PresetName,
+                instrument.Regions.Select(region =>
+                {
+                    var shiftedRoot = region.RootKey + (region.FineTuneCents / 100.0) + pitchSemitones;
+                    SplitRootNote(shiftedRoot, out var shiftedRootKey, out var shiftedFineTune);
+                    return region with
+                    {
+                        Sample = sampleMap[region.Sample.IdentityKey],
+                        RootKey = shiftedRootKey,
+                        FineTuneCents = shiftedFineTune,
+                    };
+                }).ToList()))
+            .ToList();
+
+        var programMap = plan.ProgramMap.ToDictionary(static entry => entry.Key, static entry => entry.Value);
+        return new ConversionPlan(
+            instruments,
+            sampleMap.Values.ToList(),
+            programMap,
+            plan.TrackPlans,
+            plan.Warnings);
+    }
+
+    private static WdRegionEntry? SelectTemplateRegion(
         IReadOnlyDictionary<int, List<WdRegionEntry>> templateRegionsByInstrument,
         AuthoredInstrument instrument,
         AuthoredRegion region,
         int regionIndex)
     {
         if (templateRegionsByInstrument.TryGetValue(instrument.Index, out var templateRegions) &&
-            regionIndex >= 0 &&
-            regionIndex < templateRegions.Count)
+            templateRegions.Count > 0)
         {
-            var template = templateRegions[regionIndex];
-            if (template.KeyLow == region.KeyLow &&
-                template.KeyHigh == region.KeyHigh &&
-                template.VelocityLow == region.VelocityLow &&
-                template.VelocityHigh == region.VelocityHigh &&
-                template.Stereo == region.Stereo)
+            if (regionIndex >= 0 && regionIndex < templateRegions.Count)
             {
-                return new AdsrEnvelope(template.Adsr1, template.Adsr2);
+                var exactIndexTemplate = templateRegions[regionIndex];
+                if (exactIndexTemplate.KeyLow == region.KeyLow &&
+                    exactIndexTemplate.KeyHigh == region.KeyHigh &&
+                    exactIndexTemplate.VelocityLow == region.VelocityLow &&
+                    exactIndexTemplate.VelocityHigh == region.VelocityHigh &&
+                    exactIndexTemplate.Stereo == region.Stereo)
+                {
+                    return exactIndexTemplate;
+                }
             }
+
+            return templateRegions
+                .OrderByDescending(template => ScoreTemplateRegion(template, region, regionIndex))
+                .First();
         }
 
-        return region.Envelope;
+        return null;
+    }
+
+    private static int ScoreTemplateRegion(WdRegionEntry template, AuthoredRegion region, int regionIndex)
+    {
+        var score = 0;
+
+        if (template.Stereo == region.Stereo)
+        {
+            score += 10_000;
+        }
+
+        if (template.KeyLow == region.KeyLow && template.KeyHigh == region.KeyHigh)
+        {
+            score += 4_000;
+        }
+        else
+        {
+            score += RangeOverlapScore(template.KeyLow, template.KeyHigh, region.KeyLow, region.KeyHigh) * 40;
+            score -= Math.Abs(template.KeyLow - region.KeyLow) * 8;
+            score -= Math.Abs(template.KeyHigh - region.KeyHigh) * 8;
+        }
+
+        if (template.VelocityLow == region.VelocityLow && template.VelocityHigh == region.VelocityHigh)
+        {
+            score += 2_000;
+        }
+        else
+        {
+            score += RangeOverlapScore(template.VelocityLow, template.VelocityHigh, region.VelocityLow, region.VelocityHigh) * 20;
+            score -= Math.Abs(template.VelocityLow - region.VelocityLow) * 4;
+            score -= Math.Abs(template.VelocityHigh - region.VelocityHigh) * 4;
+        }
+
+        score -= Math.Abs(template.RegionIndex - regionIndex) * 16;
+        return score;
+    }
+
+    private static int RangeOverlapScore(int leftLow, int leftHigh, int rightLow, int rightHigh)
+    {
+        var overlapLow = Math.Max(leftLow, rightLow);
+        var overlapHigh = Math.Min(leftHigh, rightHigh);
+        return Math.Max(0, overlapHigh - overlapLow + 1);
     }
 
     private static byte[] BuildBgm(string originalBgmPath, int sequenceId, int bankId, MidiFile midi, ConversionPlan plan, TextWriter log)
@@ -1193,7 +1445,13 @@ public static class BgmMidiSf2Rebuilder
         }
     }
 
-    private static int MapMidiAttenuationController(int value)
+    private static int MapMidiVolumeController(int value)
+        => MapMidiAttenuationController(value, power: 1.65, linearBlend: 0.22);
+
+    private static int MapMidiExpressionController(int value)
+        => MapMidiAttenuationController(value, power: 1.35, linearBlend: 0.40);
+
+    private static int MapMidiAttenuationController(int value, double power, double linearBlend)
     {
         var clamped = Math.Clamp(value, 0, 127);
         if (clamped is 0 or 127)
@@ -1201,11 +1459,12 @@ public static class BgmMidiSf2Rebuilder
             return clamped;
         }
 
-        // SoundFont/GM playback usually treats level controllers more like a concave loudness curve
-        // than a strict linear amplitude scalar. Compressing the lower controller range helps keep
-        // secondary layers and noisy background content further back in the mix on the PS2 path.
+        // Blend a softer loudness curve with a linear component so quieter backing layers stay present
+        // enough to preserve body and bass without letting the whole mix collapse toward full scale.
         var normalized = clamped / 127.0;
-        return Math.Clamp((int)Math.Round(Math.Pow(normalized, 2.0) * 127.0, MidpointRounding.AwayFromZero), 0, 127);
+        var shaped = Math.Pow(normalized, power);
+        var blended = (normalized * linearBlend) + (shaped * (1.0 - linearBlend));
+        return Math.Clamp((int)Math.Round(blended * 127.0, MidpointRounding.AwayFromZero), 0, 127);
     }
 
     private static short[] ApplyVolume(short[] pcm, double volume)
@@ -1270,34 +1529,10 @@ public static class BgmMidiSf2Rebuilder
             return new PreparedLoopSample(pcm, true, safeLoopStart);
         }
 
-        var padCount = 28 - remainder;
-        var availableLoopSamples = Math.Max(0, pcm.Length - safeLoopStart);
-        if (availableLoopSamples == 0)
-        {
-            return new PreparedLoopSample(pcm, true, safeLoopStart - remainder);
-        }
-
-        var inserted = new short[pcm.Length + padCount];
-        if (safeLoopStart > 0)
-        {
-            Buffer.BlockCopy(pcm, 0, inserted, 0, safeLoopStart * sizeof(short));
-        }
-
-        var bytesPerSample = sizeof(short);
-        for (var index = 0; index < padCount; index++)
-        {
-            inserted[safeLoopStart + index] = pcm[safeLoopStart + (index % availableLoopSamples)];
-        }
-
-        var tailLength = pcm.Length - safeLoopStart;
-        Buffer.BlockCopy(
-            pcm,
-            safeLoopStart * bytesPerSample,
-            inserted,
-            (safeLoopStart + padCount) * bytesPerSample,
-            tailLength * bytesPerSample);
-
-        return new PreparedLoopSample(inserted, true, safeLoopStart + padCount);
+        // For short looping instrument samples, inserting duplicated PCM at the loop point
+        // can create an audible stutter each time the sample wraps. Prefer a conservative
+        // block-aligned loop that starts slightly earlier over duplicating audio content.
+        return new PreparedLoopSample(pcm, true, safeLoopStart - remainder);
     }
 
     private static float GetStereoLeftPan(float basePan)
@@ -1313,6 +1548,27 @@ public static class BgmMidiSf2Rebuilder
     private static int SamplesToLoopStartBytes(int loopStartSample)
     {
         return Math.Max(0, (loopStartSample / 28) * 0x10);
+    }
+
+    private static int LoopStartBytesToSamples(int loopStartBytes)
+        => Math.Max(0, (loopStartBytes / 0x10) * 28);
+
+    private static void SplitRootNote(double rootNote, out int rootKey, out int fineTuneCents)
+    {
+        var totalCents = (int)Math.Round(rootNote * 100.0, MidpointRounding.AwayFromZero);
+        rootKey = (int)Math.Floor(totalCents / 100.0);
+        fineTuneCents = totalCents - (rootKey * 100);
+        if (fineTuneCents >= 100)
+        {
+            rootKey += fineTuneCents / 100;
+            fineTuneCents %= 100;
+        }
+        else if (fineTuneCents <= -100)
+        {
+            var delta = (int)Math.Ceiling(Math.Abs(fineTuneCents) / 100.0);
+            rootKey -= delta;
+            fineTuneCents += delta * 100;
+        }
     }
 
     private static AdsrEnvelope EncodeAdsr(SoundFontRegion region)
@@ -1618,6 +1874,21 @@ internal sealed record AuthoredRegion(
     float Pan,
     AdsrEnvelope Envelope,
     bool Stereo);
+
+internal sealed class ActiveChannelNote
+{
+    public ActiveChannelNote(int sourceKey, int emittedKey, int velocity)
+    {
+        SourceKey = sourceKey;
+        EmittedKey = emittedKey;
+        Velocity = velocity;
+    }
+
+    public int SourceKey { get; }
+    public int EmittedKey { get; set; }
+    public int Velocity { get; }
+    public bool DeferredRelease { get; set; }
+}
 
 internal sealed record AuthoredSample(
     string IdentityKey,

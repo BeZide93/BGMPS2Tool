@@ -1,5 +1,33 @@
 # CHANGELOG
 
+## v0.6.27 - 2026-04-05
+
+### Fixed
+
+- authored `MID + SF2 -> WD` output is now capped to a hard maximum of 980 KB
+- when an authored WD would exceed the cap, the converter now proportionally reduces the effective sample-rate budget and compensates pitch in the region tuning so the file stays compatible instead of writing an oversized WD
+
+## v0.6.26 - 2026-04-05
+
+### Fixed
+
+- MIDI channel volume and expression now use separate, softer attenuation curves so quieter backing layers keep more body and low-end instead of collapsing too far toward silence
+- SF2-driven mixes preserve more bass and backing presence while still keeping secondary layers under control on the PS2 path
+
+## v0.6.25 - 2026-04-05
+
+### Fixed
+
+- looping instrument samples no longer insert duplicated PCM at the loop point just to force block alignment
+- PSX ADPCM encoding now uses loop-aware lookahead across the loop boundary, which improves short sustained instrument loops and reduces rattling or buzzy loop artifacts
+
+## v0.6.24 - 2026-04-05
+
+### Fixed
+
+- MIDI pitch-bend is now approximated during `MID + SF2 -> BGM + WD` conversion by bend-aware note retargeting with sustain-pedal support
+- the converter now honors the standard MIDI pitch-bend range RPN when it is present, instead of treating all pitch-bend movement as fully unsupported
+
 ## v0.6.23 - 2026-04-05
 
 ### Fixed

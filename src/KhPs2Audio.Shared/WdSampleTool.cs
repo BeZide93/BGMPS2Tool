@@ -634,6 +634,9 @@ internal static class PsxAdpcmEncoder
     {
         var blockCount = Math.Max(1, (pcmSamples.Length + 27) / 28);
         var output = new byte[blockCount * 0x10];
+        var loopStartBlock = looping
+            ? Math.Clamp(loopStartBytes / 0x10, 0, Math.Max(0, blockCount - 1))
+            : 0;
         var previous1 = 0;
         var previous2 = 0;
 
@@ -643,10 +646,13 @@ internal static class PsxAdpcmEncoder
         {
             LoadBlock(pcmSamples, blockIndex, source);
 
-            var hasNextBlock = blockIndex + 1 < blockCount;
+            var hasNextBlock = blockIndex + 1 < blockCount || (looping && blockCount > 1);
             if (hasNextBlock)
             {
-                LoadBlock(pcmSamples, blockIndex + 1, nextSource);
+                var nextBlockIndex = blockIndex + 1 < blockCount
+                    ? blockIndex + 1
+                    : loopStartBlock;
+                LoadBlock(pcmSamples, nextBlockIndex, nextSource);
             }
 
             var isSilentBlock = IsEffectivelySilentBlock(source);
