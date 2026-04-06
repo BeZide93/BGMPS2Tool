@@ -1,0 +1,11 @@
+VGMTrans CLI local build
+
+Usage:
+  vgmtrans-cli.exe input_file1 input_file2 ... -o output_directory
+
+Example:
+  vgmtrans-cli.exe wave0152.wd -o output
+  vgmtrans-cli.exe wave0152.wd music152.bgm -o output
+
+This local CLI was built from:
+  C:\Users\rwolt\Desktop\Bleach Mod MM files\K2FM Voice\bgm-seb\vgmtrans-clone\vgmtrans
