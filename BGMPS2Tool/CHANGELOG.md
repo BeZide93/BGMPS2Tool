@@ -1,5 +1,36 @@
 # CHANGELOG
 
+## v0.6.54 - 2026-04-06
+
+### Fixed
+
+- `midi_loop=1` now preserves the original KH2 `BGM` slot layout instead of compacting the authored looped `BGM`
+- authored looped `BGM`s now keep the original header byte at `0x09` (`0x05` in KH2 templates) while updating only the real track-count byte at `0x08`
+- loop markers now follow the original KH2 pattern more closely by writing `Loop Begin` / `Loop End` only on the first authored playback track
+- fixed the loop-end byte order so the authored track now ends as `... delta 03 00 00` instead of accidentally terminating the track before the `Loop End` opcode
+
+## v0.6.53 - 2026-04-06
+
+### Fixed
+
+- `midi_loop=1` now writes the chosen loop range onto all authored playback tracks instead of only the first playback track, which is much closer to the multi-track KH2 loop behavior needed ingame
+
+## v0.6.52 - 2026-04-06
+
+### Fixed
+
+- `midi_loop=1` now prefers explicit loop markers from the source MIDI itself before writing KH2 loop markers into the authored `BGM`
+- supported explicit MIDI loop markers now include common text markers such as `loopstart` / `loopend` and control-change markers `CC111` / `CC110`
+- when no explicit MIDI loop markers exist, the authored `BGM` now falls back to a simple start-to-end loop instead of reusing the template loop from the original KH2 `BGM`
+- loop-begin markers are now written at the first event at or after the loop start tick, not only at the first note-on event
+
+## v0.6.51 - 2026-04-06
+
+### Added
+
+- a new `BGMInfo vgmtransdiff <InputMid> [InputSf2]` diagnostics command that rebuilds the current MIDI+SF2 pair, roundtrips the authored `BGM + WD` through `vgmtrans-cli`, and writes a structured JSON comparison report for source versus roundtrip MIDI/SF2 data
+- a matching `BGMVgmTransDiff.bat` helper in the tool package for drag-and-drop diagnostics
+
 ## v0.6.50 - 2026-04-06
 
 ### Fixed

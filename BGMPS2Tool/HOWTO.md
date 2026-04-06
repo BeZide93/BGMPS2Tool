@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.6.34`
+Version: `v0.6.52`
 
 ## Goal
 
@@ -51,6 +51,9 @@ Notes:
 - `hold_minutes` mainly affects the older WAV replacement path
 - `sf2_volume=1.0` is recommended if you want the closest possible `SF2 -> WD -> SF2` roundtrip fidelity
 - `midi_loop=1` is useful when you want the rebuilt PS2 `BGM` to loop ingame instead of behaving like a one-shot sequence
+- if the MIDI contains explicit loop markers, `midi_loop=1` now prefers those markers
+- supported explicit markers include text markers like `loopstart` / `loopend` and control changes `CC111` / `CC110`
+- if the MIDI has no explicit loop markers, `midi_loop=1` falls back to a simple start-to-end loop
 - MIDI/SF2 note lengths come from the MIDI itself
 - allowed `hold_minutes` range: `0.1` to `600`
 - allowed `pre_eq` range: `0.0` to `1.0`
@@ -126,6 +129,40 @@ output\music188.bgm
 output\wave0188.wd
 output\music188.mid-sf2-manifest.json
 ```
+
+## Method 3: VGMTrans Roundtrip Diagnostics
+
+Optional, but useful for tracking down remaining fidelity differences.
+
+Requirements:
+
+- `vgmtrans-cli.exe` next to `BGMInfo.exe`
+- or inside a `VGMTransExportBatch` folder next to the tool
+- or in a sibling `VGMTrans-v1.3` folder
+
+Then:
+
+1. drag `music188.mid` onto `BGMVgmTransDiff.bat`
+2. or run:
+
+```powershell
+.\BGMInfo.exe vgmtransdiff "C:\Path\To\music188.mid"
+```
+
+Output:
+
+```text
+output\music188.vgmtrans-roundtrip-report.json
+output\vgmtrans-roundtrip\music188\...
+```
+
+The report compares:
+
+- source `MID` vs roundtrip `MID`
+- source `SF2` vs roundtrip `SF2`
+- track counts, event counts, program sets, preset counts, region counts, and looping/stereo totals
+
+This helps with diagnostics, but it is still not identical to KH2 ingame playback because `VGMTrans` reconstructs standard `MIDI + SF2` data rather than emulating KH2 directly.
 
 ## Naming Rules
 

@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.6.34`
+Version: `v0.6.52`
 
 `BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
@@ -26,6 +26,7 @@ For MIDI rebuilds, the tool now writes a compact PS2 `BGM` containing only the c
 - `KhPs2Audio.Shared.deps.json`
 - `BGMReplaceWav.bat`
 - `BGMReplaceMidiSf2.bat`
+- `BGMVgmTransDiff.bat`
 - `config.ini`
 - `README.md`
 - `HOWTO.md`
@@ -81,6 +82,11 @@ Notes:
 - `pre_eq` is a gentle pre-encode tone-shaping stage for the WAV workflow. It can help reduce metallic or brittle artifacts after aggressive PS2 downsampling and ADPCM encoding.
 - `pre_lowpass_hz` applies an optional additional low-pass before PS2 encoding in the WAV workflow. Use `0` to disable it.
 
+Optional diagnostics:
+
+- `BGMInfo vgmtransdiff <InputMid> [InputSf2]` compares the source `MID + SF2` against a `VGMTrans` roundtrip of the authored `BGM + WD`
+- this command requires `vgmtrans-cli.exe` to be available next to `BGMInfo.exe`, inside a `VGMTransExportBatch` subfolder, or in a sibling `VGMTrans-v1.3` folder
+
 ## What The Tool Does
 
 ### WAV workflow
@@ -131,6 +137,17 @@ MIDI/SF2 workflow:
 - `BGMReplaceMidiSf2.bat`
 - `BGMInfo.exe replacemidi "C:\Path\To\music188.mid"`
 - `BGMInfo.exe replacemidi "C:\Path\To\music188.mid" "C:\Path\To\wave0188.sf2"`
+
+Diagnostics workflow:
+
+- `BGMVgmTransDiff.bat`
+- `BGMInfo.exe vgmtransdiff "C:\Path\To\music188.mid"`
+
+When `midi_loop=1` is enabled:
+
+- explicit MIDI loop markers are preferred if they exist
+- supported explicit markers include text markers such as `loopstart` / `loopend` and control changes `CC111` / `CC110`
+- if no explicit MIDI loop markers exist, the tool writes a simple start-to-end fallback loop
 
 ## Output
 
