@@ -2,7 +2,7 @@ namespace KhPs2Audio.Shared;
 
 internal static class SoundFontParser
 {
-    private const int TargetSampleRate = 44_100;
+    private const int DefaultReferenceSampleRate = 44_100;
     private const ushort RightSampleType = 2;
     private const ushort LeftSampleType = 4;
 
@@ -79,6 +79,7 @@ internal static class SoundFontParser
         var sampleHeaders = ParseSampleHeaders(shdrChunk);
 
         var warnings = new HashSet<string>(StringComparer.Ordinal);
+        var referenceSampleRate = DetermineReferenceSampleRate(sampleHeaders);
         var presets = new List<SoundFontPreset>(presetHeaders.Count);
         for (var presetIndex = 0; presetIndex < presetHeaders.Count; presetIndex++)
         {
@@ -114,7 +115,7 @@ internal static class SoundFontParser
                         GeneratorValues.Merge(presetGlobal?.Values, presetZone.Values),
                         GeneratorValues.Merge(instrumentGlobal?.Values, instrumentZone.Values));
 
-                    var materialized = MaterializeRegion(preset, combined, instrumentZone.SampleId, sampleHeaders, sampleData, warnings);
+                    var materialized = MaterializeRegion(preset, combined, instrumentZone.SampleId, sampleHeaders, sampleData, referenceSampleRate, warnings);
                     if (materialized is not null)
                     {
                         materializedRegions.Add(materialized);
@@ -365,6 +366,7 @@ internal static class SoundFontParser
         int? sampleId,
         List<Sf2SampleHeader> sampleHeaders,
         short[] sampleData,
+        int referenceSampleRate,
         HashSet<string> warnings)
     {
         if (sampleId is null || sampleId.Value < 0 || sampleId.Value >= sampleHeaders.Count)
@@ -388,9 +390,9 @@ internal static class SoundFontParser
 
         var rootNote = values.OverridingRootKey ?? sample.OriginalPitch;
         var fineTuneCents = sample.PitchCorrection + values.FineTuneCents + (values.CoarseTuneSemitones * 100);
-        if (sample.SampleRate > 0 && sample.SampleRate != TargetSampleRate)
+        if (sample.SampleRate > 0 && referenceSampleRate > 0 && sample.SampleRate != referenceSampleRate)
         {
-            var sampleRateSemitones = 12.0 * Math.Log(TargetSampleRate / (double)sample.SampleRate, 2.0);
+            var sampleRateSemitones = 12.0 * Math.Log(referenceSampleRate / (double)sample.SampleRate, 2.0);
             var coarseRateSemitones = (int)Math.Floor(sampleRateSemitones);
             rootNote += coarseRateSemitones;
             fineTuneCents += (int)Math.Round((sampleRateSemitones - coarseRateSemitones) * 100.0, MidpointRounding.AwayFromZero);
@@ -446,6 +448,56 @@ internal static class SoundFontParser
             monoSlice.LoopStartSample,
             monoSlice.Pcm,
             monoSlice.SecondaryPcm);
+    }
+
+    private static int DetermineReferenceSampleRate(IReadOnlyList<Sf2SampleHeader> sampleHeaders)
+    {
+        var usableSamples = sampleHeaders
+            .Where(static sample => sample.SampleRate > 0 && !string.Equals(sample.Name, "EOS", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (usableSamples.Length == 0)
+        {
+            return DefaultReferenceSampleRate;
+        }
+
+        var usableRates = usableSamples
+            .Select(static sample => sample.SampleRate)
+            .OrderBy(static rate => rate)
+            .ToArray();
+        var dominantRate = usableSamples
+            .GroupBy(static sample => sample.SampleRate)
+            .OrderByDescending(static group => group.Count())
+            .ThenBy(static group => Math.Abs(group.Key - 32_000))
+            .Select(static group => group.Key)
+            .First();
+
+        // Tiny waveform-style banks often really are authored around their own sample-rate basis
+        // (for example a clean 32000 Hz). Larger multi-region banks are more stable on the older
+        // conservative 44.1 kHz path, even if their raw samples cluster around ~32768 Hz.
+        if (usableSamples.Length <= 24)
+        {
+            var dominantCoverage = usableSamples.Count(sample => Math.Abs(sample.SampleRate - dominantRate) <= 64) / (double)usableSamples.Length;
+            if (dominantCoverage >= 0.75)
+            {
+                var smallBankTargets = new[] { 32_000, 32_768 };
+                var snappedSmallBankRate = smallBankTargets
+                    .OrderBy(rate => Math.Abs(rate - dominantRate))
+                    .First();
+                if (Math.Abs(snappedSmallBankRate - dominantRate) / (double)dominantRate <= 0.03)
+                {
+                    return snappedSmallBankRate;
+                }
+            }
+        }
+
+        var median = usableRates[usableRates.Length / 2];
+        var commonRates = new[] { 44_100, 48_000 };
+        var snapped = commonRates
+            .OrderBy(rate => Math.Abs(rate - median))
+            .First();
+
+        var relativeError = Math.Abs(snapped - median) / (double)median;
+        return relativeError <= 0.03 ? snapped : DefaultReferenceSampleRate;
     }
 
     private static double TimecentsToSeconds(int timecents)

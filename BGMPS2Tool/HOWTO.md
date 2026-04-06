@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.6.20`
+Version: `v0.6.34`
 
 ## Goal
 
@@ -31,6 +31,7 @@ Available settings:
 ```ini
 volume=1.0
 sf2_volume=1.0
+midi_loop=0
 hold_minutes=60
 pre_eq=0.0
 pre_lowpass_hz=0
@@ -40,6 +41,7 @@ Meaning:
 
 - `volume`: loudness multiplier for imported WAVs
 - `sf2_volume`: loudness multiplier for MIDI + SF2 conversion
+- `midi_loop`: loops the authored MIDI/BGM sequence when set to `1`
 - `hold_minutes`: minimum note hold time for looped `replacewav` builds
 - `pre_eq`: optional tone shaping before PS2 encoding for the WAV workflow
 - `pre_lowpass_hz`: optional extra low-pass cutoff before PS2 encoding for the WAV workflow
@@ -48,6 +50,7 @@ Notes:
 
 - `hold_minutes` mainly affects the older WAV replacement path
 - `sf2_volume=1.0` is recommended if you want the closest possible `SF2 -> WD -> SF2` roundtrip fidelity
+- `midi_loop=1` is useful when you want the rebuilt PS2 `BGM` to loop ingame instead of behaving like a one-shot sequence
 - MIDI/SF2 note lengths come from the MIDI itself
 - allowed `hold_minutes` range: `0.1` to `600`
 - allowed `pre_eq` range: `0.0` to `1.0`

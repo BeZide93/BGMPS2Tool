@@ -6,14 +6,23 @@ public static class BgmMidiSf2Rebuilder
 {
     private const string ConfigFileName = "config.ini";
     private const string Sf2VolumeKey = "sf2_volume";
+    private const string MidiLoopKey = "midi_loop";
     private const double DefaultSf2Volume = 1.0;
+    private const bool DefaultMidiLoop = false;
     private const ushort DefaultPpqn = 48;
     private const int MaxAuthoredWdBytes = 980 * 1024;
-    private const int MaxExpandedBgmGrowthBytes = 16 * 1024;
-    private const double MaxExpandedBgmGrowthFactor = 2.0;
+    private const int MaxExpandedBgmGrowthBytes = 64 * 1024;
+    private const double MaxExpandedBgmGrowthFactor = 4.0;
+    private const int MaxExpandedOneShotBgmGrowthBytes = 96 * 1024;
+    private const double MaxExpandedOneShotBgmGrowthFactor = 6.0;
+    private const int DefaultMidiPanCenter = 64;
+    private const double FastAttackClampSeconds = 0.125;
     private const int SpuSampleRate = 44100;
     private const int SpuMaxLevel = 0x7FFF;
     private const int MaxEnvelopeSearchSamples = SpuSampleRate * 120;
+    private const int ShortLoopAlignmentThresholdSamples = 512;
+    private const int PitchVariantStepCents = 25;
+    private const int PitchVariantMaxResidualCents = 50;
     private const int SustainHoldShift = 31;
     private const int SustainHoldStep = 3;
     private static readonly IReadOnlyList<AttackAdsrProfile> AttackProfiles = BuildAttackProfiles();
@@ -41,7 +50,9 @@ public static class BgmMidiSf2Rebuilder
         var wdPath = WdLocator.FindForBgm(bgmInfo)
             ?? throw new FileNotFoundException("No matching .wd file was found for the requested .bgm.", bgmPath);
 
-        var volume = LoadSf2Volume(log);
+        var config = LoadMidiSf2Config(log);
+        var volume = config.Sf2Volume;
+        var midiLoop = config.MidiLoop;
         var midi = MidiFileParser.Parse(inputMidiPath);
         var sf2Path = ResolveSoundFontPath(soundFontPath, assetDirectory, bgmInfo.BankId);
         var wdBank = WdBankFile.Load(wdPath);
@@ -83,7 +94,7 @@ public static class BgmMidiSf2Rebuilder
         var outputWdPath = Path.Combine(outputDirectory, Path.GetFileName(wdPath));
         var manifestPath = Path.Combine(outputDirectory, $"{assetStem}.mid-sf2-manifest.json");
 
-        var outputBgm = BuildBgm(bgmPath, bgmInfo.SequenceId, bgmInfo.BankId, midi, plan, log);
+        var outputBgm = BuildBgm(bgmPath, bgmInfo.SequenceId, bgmInfo.BankId, midi, plan, midiLoop, log);
 
         File.WriteAllBytes(outputBgmPath, outputBgm);
         File.WriteAllBytes(outputWdPath, outputWd);
@@ -174,17 +185,20 @@ public static class BgmMidiSf2Rebuilder
         }
     }
 
-    private static double LoadSf2Volume(TextWriter log)
+    private static MidiSf2Config LoadMidiSf2Config(TextWriter log)
     {
         var configPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
         if (!File.Exists(configPath))
         {
-            log.WriteLine($"Config: {ConfigFileName} not found next to the tool. Using default {Sf2VolumeKey}={DefaultSf2Volume:0.###} for MIDI/SF2 conversion.");
-            return DefaultSf2Volume;
+            log.WriteLine(
+                $"Config: {ConfigFileName} not found next to the tool. Using default {Sf2VolumeKey}={DefaultSf2Volume:0.###} and {MidiLoopKey}=0 for MIDI/SF2 conversion.");
+            return new MidiSf2Config(DefaultSf2Volume, DefaultMidiLoop);
         }
 
         var volume = DefaultSf2Volume;
+        var midiLoop = DefaultMidiLoop;
         var foundExplicitSf2Volume = false;
+        var foundExplicitMidiLoop = false;
         foreach (var rawLine in File.ReadAllLines(configPath))
         {
             var line = rawLine.Trim();
@@ -200,20 +214,30 @@ public static class BgmMidiSf2Rebuilder
             }
 
             var key = line[..separatorIndex].Trim();
-            if (!key.Equals(Sf2VolumeKey, StringComparison.OrdinalIgnoreCase))
+            var valueText = line[(separatorIndex + 1)..].Trim();
+            if (key.Equals(Sf2VolumeKey, StringComparison.OrdinalIgnoreCase))
             {
+                if (!double.TryParse(valueText, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out volume) &&
+                    !double.TryParse(valueText.Replace(',', '.'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out volume))
+                {
+                    log.WriteLine($"Config warning: could not parse {Sf2VolumeKey}={valueText}. Using the current value.");
+                    volume = DefaultSf2Volume;
+                }
+
+                foundExplicitSf2Volume = true;
                 continue;
             }
 
-            var valueText = line[(separatorIndex + 1)..].Trim();
-            if (!double.TryParse(valueText, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out volume) &&
-                !double.TryParse(valueText.Replace(',', '.'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out volume))
+            if (key.Equals(MidiLoopKey, StringComparison.OrdinalIgnoreCase))
             {
-                log.WriteLine($"Config warning: could not parse {Sf2VolumeKey}={valueText}. Using the current value.");
-                volume = DefaultSf2Volume;
-            }
+                if (!TryParseConfigBool(valueText, out midiLoop))
+                {
+                    log.WriteLine($"Config warning: could not parse {MidiLoopKey}={valueText}. Use 0/1, true/false, yes/no, or on/off. Using the current value.");
+                    midiLoop = DefaultMidiLoop;
+                }
 
-            foundExplicitSf2Volume = true;
+                foundExplicitMidiLoop = true;
+            }
         }
 
         if (volume <= 0)
@@ -222,22 +246,44 @@ public static class BgmMidiSf2Rebuilder
             volume = DefaultSf2Volume;
         }
 
-        if (foundExplicitSf2Volume)
-        {
-            log.WriteLine($"Config: loaded {configPath} -> {Sf2VolumeKey}={volume:0.###}");
-        }
-        else
-        {
-            log.WriteLine($"Config: loaded {configPath} -> {Sf2VolumeKey} not set, using neutral {Sf2VolumeKey}={volume:0.###} for MIDI/SF2 conversion.");
-        }
+        var volumeLabel = foundExplicitSf2Volume
+            ? $"{Sf2VolumeKey}={volume:0.###}"
+            : $"{Sf2VolumeKey} not set, using neutral {Sf2VolumeKey}={volume:0.###}";
+        var loopLabel = foundExplicitMidiLoop
+            ? $"{MidiLoopKey}={(midiLoop ? 1 : 0)}"
+            : $"{MidiLoopKey} not set, using default {MidiLoopKey}=0";
+        log.WriteLine($"Config: loaded {configPath} -> {volumeLabel}; {loopLabel}");
 
-        return volume;
+        return new MidiSf2Config(volume, midiLoop);
+    }
+
+    private static bool TryParseConfigBool(string valueText, out bool value)
+    {
+        switch (valueText.Trim().ToLowerInvariant())
+        {
+            case "1":
+            case "true":
+            case "yes":
+            case "on":
+                value = true;
+                return true;
+            case "0":
+            case "false":
+            case "no":
+            case "off":
+                value = false;
+                return true;
+            default:
+                value = false;
+                return false;
+        }
     }
 
     private static ConversionPlan BuildPlan(MidiFile midi, SoundFontFile soundFont, double volume, TextWriter log)
     {
         var warnings = new HashSet<string>(soundFont.Warnings, StringComparer.Ordinal);
         var usedPresetRefs = GetUsedPresetRefs(midi);
+        var pitchVariantPresetRefs = GetPitchBendPresetRefs(midi);
         var programMap = new Dictionary<PresetRef, ProgramMapping>();
         var authoredSamples = new Dictionary<string, AuthoredSample>(StringComparer.Ordinal);
         var instruments = new List<AuthoredInstrument>();
@@ -249,27 +295,78 @@ public static class BgmMidiSf2Rebuilder
         var availablePresetMap = availablePresets.ToDictionary(
             static preset => new PresetRef(preset.Bank, preset.Program),
             static preset => preset);
-        var missingPresetRefs = usedPresetRefs
-            .Where(presetRef => !availablePresetMap.ContainsKey(presetRef))
-            .OrderBy(static preset => preset.Bank)
-            .ThenBy(static preset => preset.Program)
-            .ToList();
+        var resolvedPresetMap = new Dictionary<PresetRef, SoundFontPreset>();
+        var missingPresetRefs = new HashSet<PresetRef>();
+
+        foreach (var presetRef in usedPresetRefs)
+        {
+            var resolvedPreset = ResolvePreset(soundFont, presetRef, warnings, missingPresetRefs);
+            if (resolvedPreset is not null)
+            {
+                resolvedPresetMap[presetRef] = resolvedPreset;
+            }
+        }
 
         if (missingPresetRefs.Count > 0)
         {
-            var missingList = string.Join(", ", missingPresetRefs.Select(static preset => $"{preset.Bank}/{preset.Program}"));
+            var missingList = string.Join(", ", missingPresetRefs.OrderBy(static preset => preset.Bank).ThenBy(static preset => preset.Program).Select(static preset => $"{preset.Bank}/{preset.Program}"));
             var availableList = string.Join(", ", availablePresets.Select(static preset => $"{preset.Bank}/{preset.Program}"));
             throw new MissingSoundFontPresetException(missingList, availableList);
         }
 
-        foreach (var preset in availablePresets)
+        var compactSparsePrograms = ShouldCompactSparsePrograms(usedPresetRefs);
+        if (compactSparsePrograms)
+        {
+            log.WriteLine("Program compaction: using dense PS2 instrument indices for sparse MIDI program numbers.");
+        }
+
+        var presetsToAuthor = compactSparsePrograms
+            ? resolvedPresetMap.Values
+                .DistinctBy(static preset => new PresetRef(preset.Bank, preset.Program))
+                .OrderBy(static preset => preset.Bank)
+                .ThenBy(static preset => preset.Program)
+                .ToList()
+            : availablePresets;
+        var enableShortLoopPitchCompensation = ShouldEnableShortLoopPitchCompensation(presetsToAuthor, warnings);
+        if (enableShortLoopPitchCompensation)
+        {
+            log.WriteLine("Short-loop pitch compensation: enabled for simple waveform-style SF2 content.");
+        }
+
+        var nextCompactInstrumentIndex = 0;
+        foreach (var preset in presetsToAuthor)
         {
             var presetRef = new PresetRef(preset.Bank, preset.Program);
-            var instrumentIndex = AllocateInstrumentIndex(presetRef, usedInstrumentIndices);
-            var normalizedRegions = SoundFontParser.NormalizeRegions(preset.Regions, warnings);
+            var instrumentIndex = compactSparsePrograms
+                ? AllocateCompactInstrumentIndex(usedInstrumentIndices, ref nextCompactInstrumentIndex)
+                : AllocateInstrumentIndex(presetRef, usedInstrumentIndices);
+            var normalizedRegions = CollapsePseudoStereoRegions(SoundFontParser.NormalizeRegions(preset.Regions, warnings));
             var authoredRegions = new List<AuthoredRegion>();
-            foreach (var region in normalizedRegions.OrderBy(static region => region.KeyHigh).ThenBy(static region => region.VelocityHigh))
+            var downmixedPseudoStereoRegions = 0;
+            foreach (var sourceRegion in normalizedRegions.OrderBy(static region => region.KeyHigh).ThenBy(static region => region.VelocityHigh))
             {
+                var region = sourceRegion;
+                var regionWasDownmixed = false;
+                if (region.StereoPcm is not null &&
+                    !string.IsNullOrWhiteSpace(region.StereoIdentityKey) &&
+                    Math.Abs(region.Pan) <= 0.25f)
+                {
+                    region = region with
+                    {
+                        IdentityKey = $"{region.IdentityKey}|{region.StereoIdentityKey}",
+                        SourceSampleName = region.StereoSourceSampleName is null
+                            ? region.SourceSampleName
+                            : $"{region.SourceSampleName}+{region.StereoSourceSampleName}",
+                        Pan = 0f,
+                        Pcm = MixPseudoStereoToMono(region.Pcm, region.StereoPcm),
+                        StereoIdentityKey = null,
+                        StereoSourceSampleName = null,
+                        StereoPcm = null,
+                    };
+                    downmixedPseudoStereoRegions++;
+                    regionWasDownmixed = true;
+                }
+
                 var authoredSample = GetOrAddAuthoredSample(
                     authoredSamples,
                     region.IdentityKey,
@@ -277,9 +374,12 @@ public static class BgmMidiSf2Rebuilder
                     region.Pcm,
                     region.Looping,
                     region.LoopStartSample,
-                    volume);
+                    volume,
+                    enableShortLoopPitchCompensation);
                 var envelope = EncodeAdsr(region);
                 var isStereo = region.StereoPcm is not null && !string.IsNullOrWhiteSpace(region.StereoIdentityKey);
+                var leftPitch = ApplySamplePitchOffset(region.RootKey, region.FineTuneCents, authoredSample.PitchOffsetSemitones);
+                var preferAuthoredEnvelope = regionWasDownmixed || region.AttackSeconds <= FastAttackClampSeconds;
 
                 authoredRegions.Add(new AuthoredRegion(
                     authoredSample,
@@ -287,12 +387,13 @@ public static class BgmMidiSf2Rebuilder
                     region.KeyHigh,
                     region.VelocityLow,
                     region.VelocityHigh,
-                    region.RootKey,
-                    region.FineTuneCents,
+                    leftPitch.RootKey,
+                    leftPitch.FineTuneCents,
                     Math.Clamp(region.Volume, 0f, 1f),
                     isStereo ? GetStereoLeftPan(region.Pan) : Math.Clamp(region.Pan, -1f, 1f),
                     envelope,
-                    isStereo));
+                    isStereo,
+                    preferAuthoredEnvelope));
 
                 if (isStereo)
                 {
@@ -303,7 +404,9 @@ public static class BgmMidiSf2Rebuilder
                         region.StereoPcm!,
                         region.Looping,
                         region.LoopStartSample,
-                        volume);
+                        volume,
+                        enableShortLoopPitchCompensation);
+                    var rightPitch = ApplySamplePitchOffset(region.RootKey, region.FineTuneCents, stereoSample.PitchOffsetSemitones);
 
                     authoredRegions.Add(new AuthoredRegion(
                         stereoSample,
@@ -311,31 +414,52 @@ public static class BgmMidiSf2Rebuilder
                         region.KeyHigh,
                         region.VelocityLow,
                         region.VelocityHigh,
-                        region.RootKey,
-                        region.FineTuneCents,
+                        rightPitch.RootKey,
+                        rightPitch.FineTuneCents,
                         Math.Clamp(region.Volume, 0f, 1f),
                         GetStereoRightPan(region.Pan),
                         envelope,
-                        true));
+                        true,
+                        preferAuthoredEnvelope));
                 }
             }
 
             var instrument = new AuthoredInstrument(instrumentIndex, preset.Name, authoredRegions);
             instruments.Add(instrument);
-            programMap.Add(presetRef, new ProgramMapping((byte)instrumentIndex, preset.Name, instrument.Regions.Count));
+            programMap[presetRef] = new ProgramMapping((byte)instrumentIndex, preset.Name, instrument.Regions.Count);
             var usageLabel = usedPresetRefs.Contains(presetRef) ? "used" : "preserved";
             log.WriteLine($"Preset {presetRef.Bank}/{presetRef.Program} -> instrument {instrumentIndex}, authored {instrument.Regions.Count} region(s), {usageLabel}.");
+            if (downmixedPseudoStereoRegions > 0)
+            {
+                log.WriteLine($"Preset {presetRef.Bank}/{presetRef.Program}: downmixed {downmixedPseudoStereoRegions} pseudo-stereo region(s) to centered mono for KH2 playback compatibility.");
+            }
+        }
+
+        foreach (var (requestedPresetRef, resolvedPreset) in resolvedPresetMap)
+        {
+            var resolvedPresetRef = new PresetRef(resolvedPreset.Bank, resolvedPreset.Program);
+            if (requestedPresetRef == resolvedPresetRef || !programMap.TryGetValue(resolvedPresetRef, out var resolvedMapping))
+            {
+                continue;
+            }
+
+            programMap[requestedPresetRef] = resolvedMapping;
+        }
+
+        if (pitchVariantPresetRefs.Count > 0)
+        {
+            AddPitchVariantInstruments(instruments, usedInstrumentIndices, programMap, pitchVariantPresetRefs, log);
         }
 
         var channelPlans = BuildTrackPlans(midi, programMap, warnings);
 
         if (midi.Tracks.SelectMany(static track => track.Events).OfType<MidiPitchBendEvent>().Any())
         {
-            warnings.Add("Pitch-bend events are approximated by bend-aware note retargeting. Continuous bends are not yet emitted as native KH2 pitch opcodes.");
+            warnings.Add("Pitch-bend events are approximated by bend-aware note retargeting plus fine-tuned instrument variants. Continuous bends are not yet emitted as native KH2 pitch opcodes.");
         }
 
         log.WriteLine($"MIDI analysis: format {midi.Format}, PPQN {midi.Division}, {midi.Tracks.Count} track(s).");
-        log.WriteLine($"SoundFont analysis: {soundFont.Presets.Count} preset(s), {usedPresetRefs.Count} preset(s) referenced by the MIDI, {instruments.Count} preset(s) authored into the WD.");
+        log.WriteLine($"SoundFont analysis: {soundFont.Presets.Count} preset(s), {usedPresetRefs.Count} preset(s) referenced by the MIDI, {instruments.Count} instrument(s) authored into the WD.");
         log.WriteLine($"Authored WD plan: {instruments.Count} instrument(s), {instruments.Sum(static instrument => instrument.Regions.Count)} region(s), {authoredSamples.Count} unique sample(s).");
 
         foreach (var warning in warnings.OrderBy(static warning => warning))
@@ -537,6 +661,57 @@ public static class BgmMidiSf2Rebuilder
         return result;
     }
 
+    private static HashSet<PresetRef> GetPitchBendPresetRefs(MidiFile midi)
+    {
+        var pitchBendChannels = midi.Tracks
+            .SelectMany(static track => track.Events)
+            .OfType<MidiPitchBendEvent>()
+            .Select(static evt => evt.Channel)
+            .Where(static channel => channel is >= 0 and < 16)
+            .ToHashSet();
+        if (pitchBendChannels.Count == 0)
+        {
+            return [];
+        }
+
+        var used = new HashSet<PresetRef>();
+        var bankMsb = new int[16];
+        var bankLsb = new int[16];
+        var currentProgram = new int[16];
+
+        var orderedEvents = midi.Tracks
+            .SelectMany(static track => track.Events)
+            .OrderBy(static evt => evt.Tick)
+            .ThenBy(static evt => evt.Order)
+            .ToList();
+
+        foreach (var evt in orderedEvents)
+        {
+            if (evt.Channel is < 0 or > 15)
+            {
+                continue;
+            }
+
+            switch (evt)
+            {
+                case MidiControlChangeEvent control when control.Controller == 0:
+                    bankMsb[control.Channel] = control.Value;
+                    break;
+                case MidiControlChangeEvent control when control.Controller == 32:
+                    bankLsb[control.Channel] = control.Value;
+                    break;
+                case MidiProgramChangeEvent programChange:
+                    currentProgram[programChange.Channel] = programChange.Program;
+                    break;
+                case MidiNoteOnEvent noteOn when pitchBendChannels.Contains(noteOn.Channel):
+                    used.Add(new PresetRef(GetBankNumber(bankMsb[noteOn.Channel], bankLsb[noteOn.Channel]), currentProgram[noteOn.Channel]));
+                    break;
+            }
+        }
+
+        return used;
+    }
+
     private static int AllocateInstrumentIndex(PresetRef presetRef, HashSet<int> usedInstrumentIndices)
     {
         if (presetRef.Program is >= 0 and <= byte.MaxValue && usedInstrumentIndices.Add(presetRef.Program))
@@ -555,6 +730,228 @@ public static class BgmMidiSf2Rebuilder
         throw new InvalidDataException("The converted MIDI references more than 256 unique SoundFont programs, which exceeds the PS2 BGM program limit.");
     }
 
+    private static int AllocateCompactInstrumentIndex(HashSet<int> usedInstrumentIndices, ref int nextCompactInstrumentIndex)
+    {
+        while (nextCompactInstrumentIndex <= byte.MaxValue)
+        {
+            var index = nextCompactInstrumentIndex++;
+            if (usedInstrumentIndices.Add(index))
+            {
+                return index;
+            }
+        }
+
+        throw new InvalidDataException("The compacted PS2 instrument map would exceed the 256 program limit.");
+    }
+
+    private static int AllocateNextInstrumentIndex(HashSet<int> usedInstrumentIndices)
+    {
+        for (var index = 0; index <= byte.MaxValue; index++)
+        {
+            if (usedInstrumentIndices.Add(index))
+            {
+                return index;
+            }
+        }
+
+        throw new InvalidDataException("The converted MIDI references more than 256 authored instruments, which exceeds the PS2 BGM program limit.");
+    }
+
+    private static bool ShouldCompactSparsePrograms(IReadOnlyCollection<PresetRef> usedPresetRefs)
+    {
+        if (usedPresetRefs.Count == 0)
+        {
+            return false;
+        }
+
+        var maxProgram = usedPresetRefs.Max(static preset => preset.Program);
+        var distinctPrograms = usedPresetRefs.Select(static preset => preset.Program).Distinct().Count();
+        var spread = maxProgram + 1;
+        return maxProgram > 31 && spread > (distinctPrograms * 2);
+    }
+
+    private static bool ShouldEnableShortLoopPitchCompensation(
+        IReadOnlyList<SoundFontPreset> presetsToAuthor,
+        HashSet<string> warnings)
+    {
+        var totalRegions = 0;
+        foreach (var preset in presetsToAuthor)
+        {
+            totalRegions += SoundFontParser.NormalizeRegions(preset.Regions, warnings).Count;
+            if (totalRegions > 12)
+            {
+                return false;
+            }
+        }
+
+        return totalRegions > 0;
+    }
+
+    private static List<SoundFontRegion> CollapsePseudoStereoRegions(List<SoundFontRegion> regions)
+    {
+        if (regions.Count < 2)
+        {
+            return regions;
+        }
+
+        var result = new List<SoundFontRegion>(regions.Count);
+        var used = new bool[regions.Count];
+        for (var index = 0; index < regions.Count; index++)
+        {
+            if (used[index])
+            {
+                continue;
+            }
+
+            var current = regions[index];
+            var pairIndex = -1;
+            for (var candidateIndex = index + 1; candidateIndex < regions.Count; candidateIndex++)
+            {
+                if (used[candidateIndex])
+                {
+                    continue;
+                }
+
+                var candidate = regions[candidateIndex];
+                if (!CanCollapsePseudoStereoRegion(current, candidate))
+                {
+                    continue;
+                }
+
+                pairIndex = candidateIndex;
+                break;
+            }
+
+            if (pairIndex < 0)
+            {
+                result.Add(current);
+                continue;
+            }
+
+            used[index] = true;
+            used[pairIndex] = true;
+            var left = current.Pan <= regions[pairIndex].Pan ? current : regions[pairIndex];
+            var right = ReferenceEquals(left, current) ? regions[pairIndex] : current;
+            result.Add(left with
+            {
+                IdentityKey = $"{left.IdentityKey}|{right.IdentityKey}",
+                SourceSampleName = $"{left.SourceSampleName}+{right.SourceSampleName}",
+                Pan = 0f,
+                Pcm = MixPseudoStereoToMono(left.Pcm, right.Pcm),
+                StereoIdentityKey = null,
+                StereoSourceSampleName = null,
+                StereoPcm = null,
+            });
+        }
+
+        return result;
+    }
+
+    private static short[] MixPseudoStereoToMono(short[] left, short[] right)
+    {
+        var length = Math.Max(left.Length, right.Length);
+        var mixed = new short[length];
+        for (var index = 0; index < length; index++)
+        {
+            var leftSample = index < left.Length ? left[index] : 0;
+            var rightSample = index < right.Length ? right[index] : 0;
+            mixed[index] = (short)Math.Clamp(
+                (int)Math.Round((leftSample + rightSample) / 2.0, MidpointRounding.AwayFromZero),
+                short.MinValue,
+                short.MaxValue);
+        }
+
+        return mixed;
+    }
+
+    private static bool CanCollapsePseudoStereoRegion(SoundFontRegion left, SoundFontRegion right)
+    {
+        if (left.StereoPcm is not null || right.StereoPcm is not null ||
+            left.StereoIdentityKey is not null || right.StereoIdentityKey is not null)
+        {
+            return false;
+        }
+
+        if (left.IdentityKey == right.IdentityKey ||
+            left.KeyLow != right.KeyLow ||
+            left.KeyHigh != right.KeyHigh ||
+            left.VelocityLow != right.VelocityLow ||
+            left.VelocityHigh != right.VelocityHigh ||
+            left.RootKey != right.RootKey ||
+            left.FineTuneCents != right.FineTuneCents)
+        {
+            return false;
+        }
+
+        if (Math.Abs(left.Volume - right.Volume) >= 0.15f ||
+            Math.Abs(left.PresetBank - right.PresetBank) > 0 ||
+            Math.Abs(left.PresetProgram - right.PresetProgram) > 0)
+        {
+            return false;
+        }
+
+        return left.Pan < 0f &&
+               right.Pan > 0f &&
+               Math.Abs(left.Pan + right.Pan) < 0.25f;
+    }
+
+    private static void AddPitchVariantInstruments(
+        List<AuthoredInstrument> instruments,
+        HashSet<int> usedInstrumentIndices,
+        Dictionary<PresetRef, ProgramMapping> programMap,
+        HashSet<PresetRef> pitchVariantPresetRefs,
+        TextWriter log)
+    {
+        if (pitchVariantPresetRefs.Count == 0)
+        {
+            return;
+        }
+
+        var instrumentLookup = instruments.ToDictionary(static instrument => instrument.Index);
+        foreach (var presetRef in pitchVariantPresetRefs.OrderBy(static preset => preset.Bank).ThenBy(static preset => preset.Program))
+        {
+            if (!programMap.TryGetValue(presetRef, out var mapping) ||
+                !instrumentLookup.TryGetValue(mapping.InstrumentIndex, out var baseInstrument))
+            {
+                continue;
+            }
+
+            var variants = new Dictionary<int, byte>
+            {
+                [0] = mapping.InstrumentIndex,
+            };
+
+            foreach (var cents in EnumeratePitchVariantCents())
+            {
+                var instrumentIndex = AllocateNextInstrumentIndex(usedInstrumentIndices);
+                var variantRegions = baseInstrument.Regions
+                    .Select(region => RetuneRegion(region, cents))
+                    .ToList();
+                var variantInstrument = new AuthoredInstrument(
+                    instrumentIndex,
+                    $"{baseInstrument.PresetName} pitch {cents:+#;-#;0}c",
+                    variantRegions);
+                instruments.Add(variantInstrument);
+                instrumentLookup[instrumentIndex] = variantInstrument;
+                variants[cents] = (byte)instrumentIndex;
+            }
+
+            programMap[presetRef] = mapping with { PitchVariantPrograms = variants };
+            log.WriteLine($"Pitch variants: preset {presetRef.Bank}/{presetRef.Program} -> {variants.Count} tuned instrument state(s) for bend-aware playback.");
+        }
+    }
+
+    private static IEnumerable<int> EnumeratePitchVariantCents()
+    {
+        for (var cents = -PitchVariantMaxResidualCents; cents <= PitchVariantMaxResidualCents; cents += PitchVariantStepCents)
+        {
+            if (cents != 0)
+            {
+                yield return cents;
+            }
+        }
+    }
+
     private static SoundFontPreset? ResolvePreset(
         SoundFontFile soundFont,
         PresetRef presetRef,
@@ -565,6 +962,26 @@ public static class BgmMidiSf2Rebuilder
         if (preset is not null)
         {
             return preset;
+        }
+
+        if (presetRef.Bank == 128)
+        {
+            warnings.Add($"No SoundFont preset found for percussion bank {presetRef.Bank}, program {presetRef.Program}. Falling back to percussion bank 128 if possible.");
+            preset = soundFont.FindPreset(128, 0);
+            if (preset is not null)
+            {
+                return preset;
+            }
+
+            var nearestPercussion = soundFont.Presets
+                .Where(static candidate => candidate.Bank == 128)
+                .OrderBy(candidate => Math.Abs(candidate.Program - presetRef.Program))
+                .ThenBy(static candidate => candidate.Program)
+                .FirstOrDefault();
+            if (nearestPercussion is not null)
+            {
+                return nearestPercussion;
+            }
         }
 
         warnings.Add($"No SoundFont preset found for bank {presetRef.Bank}, program {presetRef.Program}. Falling back to bank 0 if possible.");
@@ -662,12 +1079,12 @@ public static class BgmMidiSf2Rebuilder
                         break;
                     case MidiProgramChangeEvent programChange:
                         currentProgram = programChange.Program;
-                        if (TryResolveProgram(programMap, bankMsb, bankLsb, currentProgram, out var mappedProgram))
+                        if (TryResolveProgramMapping(programMap, bankMsb, bankLsb, currentProgram, out var mappedProgram))
                         {
-                            if (emittedProgram != mappedProgram)
+                            if (emittedProgram != mappedProgram.InstrumentIndex)
                             {
-                                authoredEvents.Add(new AuthoredProgramEvent(programChange.Tick, mappedProgram));
-                                emittedProgram = mappedProgram;
+                                authoredEvents.Add(new AuthoredProgramEvent(programChange.Tick, mappedProgram.InstrumentIndex));
+                                emittedProgram = mappedProgram.InstrumentIndex;
                             }
                         }
                         else
@@ -747,17 +1164,17 @@ public static class BgmMidiSf2Rebuilder
                             activeNotes.Remove(deferred);
                         }
 
-                        if (TryResolveProgram(programMap, bankMsb, bankLsb, currentProgram, out var noteProgram) && emittedProgram != noteProgram)
+                        if (TryResolveProgramMapping(programMap, bankMsb, bankLsb, currentProgram, out var noteProgram))
                         {
-                            authoredEvents.Add(new AuthoredProgramEvent(noteOn.Tick, noteProgram));
-                            emittedProgram = noteProgram;
-                        }
+                            var pitchTarget = ResolvePitchTarget(noteOn.Key, currentPitchBend, bendRangeSemitones, noteProgram);
+                            if (emittedProgram != pitchTarget.Program)
+                            {
+                                authoredEvents.Add(new AuthoredProgramEvent(noteOn.Tick, pitchTarget.Program));
+                                emittedProgram = pitchTarget.Program;
+                            }
 
-                        if (emittedProgram.HasValue)
-                        {
-                            var bentKey = ApplyPitchBendToKey(noteOn.Key, currentPitchBend, bendRangeSemitones);
-                            authoredEvents.Add(new AuthoredNoteOnEvent(noteOn.Tick, bentKey, noteOn.Velocity));
-                            activeNotes.Add(new ActiveChannelNote(noteOn.Key, bentKey, noteOn.Velocity));
+                            authoredEvents.Add(new AuthoredNoteOnEvent(noteOn.Tick, pitchTarget.Key, noteOn.Velocity));
+                            activeNotes.Add(new ActiveChannelNote(noteOn.Key, pitchTarget.Key, noteOn.Velocity));
                         }
 
                         break;
@@ -768,17 +1185,43 @@ public static class BgmMidiSf2Rebuilder
                             break;
                         }
 
-                        foreach (var activeNote in activeNotes)
+                        if (!TryResolveProgramMapping(programMap, bankMsb, bankLsb, currentProgram, out var bendProgram))
                         {
-                            var bentKey = ApplyPitchBendToKey(activeNote.SourceKey, currentPitchBend, bendRangeSemitones);
-                            if (bentKey == activeNote.EmittedKey)
-                            {
-                                continue;
-                            }
+                            break;
+                        }
 
-                            authoredEvents.Add(new AuthoredNoteOffEvent(pitchBend.Tick, activeNote.EmittedKey));
-                            authoredEvents.Add(new AuthoredNoteOnEvent(pitchBend.Tick, bentKey, activeNote.Velocity));
-                            activeNote.EmittedKey = bentKey;
+                        var retargetedNotes = activeNotes
+                            .Select(activeNote => new
+                            {
+                                Note = activeNote,
+                                Target = ResolvePitchTarget(activeNote.SourceKey, currentPitchBend, bendRangeSemitones, bendProgram),
+                            })
+                            .ToList();
+                        var desiredProgram = retargetedNotes.Count == 0
+                            ? emittedProgram.Value
+                            : retargetedNotes[0].Target.Program;
+                        var requiresRetarget = desiredProgram != emittedProgram.Value ||
+                            retargetedNotes.Any(entry => entry.Target.Key != entry.Note.EmittedKey);
+                        if (!requiresRetarget)
+                        {
+                            break;
+                        }
+
+                        foreach (var entry in retargetedNotes)
+                        {
+                            authoredEvents.Add(new AuthoredNoteOffEvent(pitchBend.Tick, entry.Note.EmittedKey));
+                        }
+
+                        if (desiredProgram != emittedProgram.Value)
+                        {
+                            authoredEvents.Add(new AuthoredProgramEvent(pitchBend.Tick, desiredProgram));
+                            emittedProgram = desiredProgram;
+                        }
+
+                        foreach (var entry in retargetedNotes)
+                        {
+                            authoredEvents.Add(new AuthoredNoteOnEvent(pitchBend.Tick, entry.Target.Key, entry.Note.Velocity));
+                            entry.Note.EmittedKey = entry.Target.Key;
                         }
 
                         break;
@@ -792,6 +1235,11 @@ public static class BgmMidiSf2Rebuilder
                 {
                     authoredEvents.Add(new AuthoredNoteOffEvent(releaseTick, activeNote.EmittedKey));
                 }
+            }
+
+            if (!authoredEvents.OfType<AuthoredPanEvent>().Any())
+            {
+                authoredEvents.Add(new AuthoredPanEvent(0, DefaultMidiPanCenter));
             }
 
             authoredEvents = authoredEvents
@@ -855,45 +1303,73 @@ public static class BgmMidiSf2Rebuilder
         return null;
     }
 
-    private static int ApplyPitchBendToKey(int sourceKey, int pitchBendValue, double bendRangeSemitones)
+    private static PitchTarget ResolvePitchTarget(int sourceKey, int pitchBendValue, double bendRangeSemitones, ProgramMapping program)
     {
         var clampedBend = Math.Clamp(pitchBendValue, -8192, 8191);
         var normalized = clampedBend >= 0
             ? clampedBend / 8191.0
             : clampedBend / 8192.0;
         var bentKey = sourceKey + (normalized * bendRangeSemitones);
-        return Math.Clamp((int)Math.Round(bentKey, MidpointRounding.AwayFromZero), 0, 127);
+        var emittedKey = Math.Clamp((int)Math.Round(bentKey, MidpointRounding.AwayFromZero), 0, 127);
+        var residualCents = (int)Math.Round((bentKey - emittedKey) * 100.0, MidpointRounding.AwayFromZero);
+        return new PitchTarget(ResolvePitchVariantProgram(program, residualCents), emittedKey);
     }
 
-    private static bool TryResolveProgram(
+    private static byte ResolvePitchVariantProgram(ProgramMapping program, int residualCents)
+    {
+        if (program.PitchVariantPrograms is null || program.PitchVariantPrograms.Count == 0)
+        {
+            return program.InstrumentIndex;
+        }
+
+        var quantizedResidual = QuantizePitchVariantCents(residualCents);
+        if (program.PitchVariantPrograms.TryGetValue(quantizedResidual, out var exactProgram))
+        {
+            return exactProgram;
+        }
+
+        var nearest = program.PitchVariantPrograms
+            .OrderBy(pair => Math.Abs(pair.Key - quantizedResidual))
+            .ThenBy(static pair => Math.Abs(pair.Key))
+            .First();
+        return nearest.Value;
+    }
+
+    private static int QuantizePitchVariantCents(int residualCents)
+    {
+        var clamped = Math.Clamp(residualCents, -PitchVariantMaxResidualCents, PitchVariantMaxResidualCents);
+        return (int)(Math.Round(clamped / (double)PitchVariantStepCents, MidpointRounding.AwayFromZero) * PitchVariantStepCents);
+    }
+
+    private static bool TryResolveProgramMapping(
         IReadOnlyDictionary<PresetRef, ProgramMapping> programMap,
         int bankMsb,
         int bankLsb,
         int program,
-        out byte mappedProgram)
+        out ProgramMapping mappedProgram)
     {
         var exact = new PresetRef(GetBankNumber(bankMsb, bankLsb), program);
         if (programMap.TryGetValue(exact, out var exactMapping))
         {
-            mappedProgram = exactMapping.InstrumentIndex;
+            mappedProgram = exactMapping;
             return true;
         }
 
         var coarse = new PresetRef(bankMsb << 7, program);
         if (programMap.TryGetValue(coarse, out var coarseMapping))
         {
-            mappedProgram = coarseMapping.InstrumentIndex;
+            mappedProgram = coarseMapping;
             return true;
         }
 
         var fallback = new PresetRef(0, program);
         if (programMap.TryGetValue(fallback, out var fallbackMapping))
         {
-            mappedProgram = fallbackMapping.InstrumentIndex;
+            mappedProgram = fallbackMapping;
             return true;
         }
 
-        mappedProgram = 0;
+        mappedProgram = default!;
         return false;
     }
 
@@ -961,7 +1437,7 @@ public static class BgmMidiSf2Rebuilder
                 BinaryHelpers.WriteUInt32LE(output, 0x20 + (instrument.Index * 4), (uint)(currentRegionOffset - (regionIndex * 0x20)));
                 BinaryHelpers.WriteUInt32LE(regionBytes, 0x04, (uint)sampleOffsetLookup[region.Sample.IdentityKey]);
                 BinaryHelpers.WriteUInt32LE(regionBytes, 0x08, (uint)WdLayoutHelpers.OffsetLoopStartForStoredChunk(region.Sample.Looping, region.Sample.LoopStartBytes));
-                var adsr = templateRegion is not null
+                var adsr = templateRegion is not null && !region.PreferAuthoredEnvelope
                     ? new AdsrEnvelope(templateRegion.Adsr1, templateRegion.Adsr2)
                     : region.Envelope;
                 BinaryHelpers.WriteUInt16LE(regionBytes, 0x0E, adsr.Adsr1);
@@ -1016,7 +1492,7 @@ public static class BgmMidiSf2Rebuilder
             var resampledLoopStart = sample.Looping
                 ? Math.Clamp((int)Math.Round(loopStartSamples * (targetRate / (double)SpuSampleRate), MidpointRounding.AwayFromZero), 0, Math.Max(0, resampledPcm.Length - 1))
                 : 0;
-            var prepared = PrepareLoopAlignedSample(resampledPcm, sample.Looping, resampledLoopStart);
+            var prepared = PrepareLoopAlignedSample(resampledPcm, sample.Looping, resampledLoopStart, false);
             var encoded = PsxAdpcmEncoder.Encode(
                 prepared.Pcm,
                 prepared.Looping,
@@ -1127,7 +1603,7 @@ public static class BgmMidiSf2Rebuilder
         return Math.Max(0, overlapHigh - overlapLow + 1);
     }
 
-    private static byte[] BuildBgm(string originalBgmPath, int sequenceId, int bankId, MidiFile midi, ConversionPlan plan, TextWriter log)
+    private static byte[] BuildBgm(string originalBgmPath, int sequenceId, int bankId, MidiFile midi, ConversionPlan plan, bool midiLoop, TextWriter log)
     {
         var templateBytes = File.ReadAllBytes(originalBgmPath);
         if (templateBytes.Length < 0x20)
@@ -1150,8 +1626,17 @@ public static class BgmMidiSf2Rebuilder
         }
 
         var conductorTrack = BuildConductorTrack(midi, targetPpqn);
+        var templateLoop = midiLoop ? TryReadTemplateLoop(originalBgmPath) : null;
         var generatedPlaybackTracks = plan.TrackPlans
-            .Select(track => new GeneratedTrack(track.Channel, track.Name, BuildPlaybackTrack(track.Events, checked((ushort)midi.Division), targetPpqn)))
+            .Select((track, index) => new GeneratedTrack(
+                track.Channel,
+                track.Name,
+                BuildPlaybackTrack(
+                    track.Events,
+                    checked((ushort)midi.Division),
+                    targetPpqn,
+                    midiLoop ? templateLoop : null,
+                    midiLoop && index == 0)))
             .ToList();
 
         var trackLayout = ReadTrackLayout(templateBytes, templateTrackCount);
@@ -1170,7 +1655,7 @@ public static class BgmMidiSf2Rebuilder
 
         var needsExpansion = slotLengths.Where((length, index) => length > trackLayout[index].Length).Any();
         var outputLength = CalculateExpandedBgmLength(slotLengths);
-        var maxAllowedLength = CalculateMaxAllowedBgmLength(templateBytes.Length);
+        var maxAllowedLength = CalculateMaxAllowedBgmLength(templateBytes.Length, midiLoop);
         if (needsExpansion && outputLength > maxAllowedLength)
         {
             var largestGeneratedTrack = generatedPlaybackTracks
@@ -1219,6 +1704,18 @@ public static class BgmMidiSf2Rebuilder
             : $"in-place at {output.Length} bytes";
         log.WriteLine(
             $"Authored BGM compact rebuild: wrote {activeTrackCount} track(s) (1 conductor + {generatedPlaybackTracks.Count} playback), target PPQN {targetPpqn}, {rebuildMode}.");
+        if (midiLoop && generatedPlaybackTracks.Count > 0)
+        {
+            if (templateLoop is not null)
+            {
+                log.WriteLine($"BGM loop option: enabled via config; reused template loop ticks begin={templateLoop.BeginTick}, end={templateLoop.EndTick} on the first playback track.");
+            }
+            else
+            {
+                log.WriteLine("BGM loop option: enabled via config; no template loop was found, so a fallback loop was written on the first playback track.");
+            }
+        }
+
         return output;
     }
 
@@ -1260,15 +1757,35 @@ public static class BgmMidiSf2Rebuilder
         return [.. bytes];
     }
 
-    private static byte[] BuildPlaybackTrack(IReadOnlyList<AuthoredTrackEvent> events, ushort sourcePpqn, ushort targetPpqn)
+    private static byte[] BuildPlaybackTrack(IReadOnlyList<AuthoredTrackEvent> events, ushort sourcePpqn, ushort targetPpqn, TemplateLoop? templateLoop = null, bool emitLoopMarkers = false)
     {
         var bytes = new List<byte>(Math.Max(32, events.Count * 4));
         long currentTick = 0;
         byte previousKey = 0;
         byte previousVelocity = 100;
+        var loopTrack = templateLoop is not null;
+        var loopBeginWritten = false;
+        var loopBeginTick = loopTrack ? Math.Max(0L, templateLoop!.BeginTick) : 0L;
+        var loopEndTick = loopTrack ? Math.Max(loopBeginTick, templateLoop!.EndTick) : 0L;
         foreach (var evt in events)
         {
             var scaledTick = ScaleTick(evt.Tick, sourcePpqn, targetPpqn);
+            if (loopTrack && scaledTick >= loopEndTick)
+            {
+                break;
+            }
+
+            if (emitLoopMarkers &&
+                !loopBeginWritten &&
+                evt is AuthoredNoteOnEvent &&
+                scaledTick >= loopBeginTick)
+            {
+                WriteDelta(bytes, checked((int)Math.Max(0, loopBeginTick - currentTick)));
+                bytes.Add(0x02);
+                currentTick = loopBeginTick;
+                loopBeginWritten = true;
+            }
+
             WriteDelta(bytes, checked((int)Math.Max(0, scaledTick - currentTick)));
             switch (evt)
             {
@@ -1320,17 +1837,7 @@ public static class BgmMidiSf2Rebuilder
                 case AuthoredNoteOffEvent noteOff:
                 {
                     var key = (byte)Math.Clamp(noteOff.Key, 0, 127);
-                    if (key == previousKey)
-                    {
-                        bytes.Add(0x18);
-                    }
-                    else
-                    {
-                        bytes.Add(0x1A);
-                        bytes.Add(key);
-                        previousKey = key;
-                    }
-
+                    WriteNoteOff(bytes, key, ref previousKey);
                     break;
                 }
             }
@@ -1338,9 +1845,170 @@ public static class BgmMidiSf2Rebuilder
             currentTick = scaledTick;
         }
 
-        WriteDelta(bytes, 96);
-        bytes.Add(0x00);
+        if (loopTrack)
+        {
+            if (emitLoopMarkers && !loopBeginWritten)
+            {
+                WriteDelta(bytes, checked((int)Math.Max(0, loopBeginTick - currentTick)));
+                bytes.Add(0x02);
+                currentTick = loopBeginTick;
+                loopBeginWritten = true;
+            }
+
+            WriteDelta(bytes, checked((int)Math.Max(0, loopEndTick - currentTick)));
+            currentTick = loopEndTick;
+            if (emitLoopMarkers)
+            {
+                WriteDelta(bytes, 0);
+                bytes.Add(0x03);
+            }
+
+            WriteDelta(bytes, 0);
+            bytes.Add(0x00);
+        }
+        else
+        {
+            WriteDelta(bytes, 96);
+            bytes.Add(0x00);
+        }
+
         return [.. bytes];
+    }
+
+    private static void WriteNoteOff(List<byte> bytes, byte key, ref byte previousKey)
+    {
+        if (key == previousKey)
+        {
+            bytes.Add(0x18);
+        }
+        else
+        {
+            bytes.Add(0x1A);
+            bytes.Add(key);
+            previousKey = key;
+        }
+    }
+
+    private static TemplateLoop? TryReadTemplateLoop(string originalBgmPath)
+    {
+        var data = File.ReadAllBytes(originalBgmPath);
+        if (data.Length < 0x24)
+        {
+            return null;
+        }
+
+        var trackCount = Math.Max(1, (int)data[0x08]);
+        var trackLayout = ReadTrackLayout(data, trackCount);
+        for (var trackIndex = 1; trackIndex < trackLayout.Count; trackIndex++)
+        {
+            var loop = TryParseLoopMarkers(data, trackLayout[trackIndex]);
+            if (loop is not null)
+            {
+                return loop;
+            }
+        }
+
+        return null;
+    }
+
+    private static TemplateLoop? TryParseLoopMarkers(byte[] data, TrackLayout layout)
+    {
+        var offset = layout.Start;
+        var end = layout.Start + layout.Length;
+        long tick = 0;
+        long? loopBegin = null;
+        long? loopEnd = null;
+        while (offset < end)
+        {
+            tick += ReadVarLen(data, ref offset);
+            if (offset >= end)
+            {
+                break;
+            }
+
+            var status = data[offset++];
+            switch (status)
+            {
+                case 0x00:
+                    offset = end;
+                    break;
+                case 0x02:
+                    loopBegin ??= tick;
+                    break;
+                case 0x03:
+                    loopEnd ??= tick;
+                    break;
+                case 0x04:
+                case 0x60:
+                case 0x61:
+                case 0x7F:
+                    break;
+                case 0x08:
+                case 0x0A:
+                case 0x0D:
+                case 0x28:
+                case 0x31:
+                case 0x34:
+                case 0x35:
+                case 0x3E:
+                case 0x58:
+                case 0x5D:
+                    offset += 1;
+                    break;
+                case 0x0C:
+                case 0x19:
+                case 0x47:
+                case 0x5C:
+                    offset += 2;
+                    break;
+                case 0x40:
+                case 0x48:
+                case 0x50:
+                    offset += 3;
+                    break;
+                case 0x11:
+                    offset += 2;
+                    break;
+                case 0x12:
+                case 0x13:
+                case 0x1A:
+                case 0x20:
+                case 0x22:
+                case 0x24:
+                case 0x26:
+                case 0x3C:
+                    offset += 1;
+                    break;
+                case 0x10:
+                case 0x18:
+                    break;
+                default:
+                    return null;
+            }
+        }
+
+        if (loopBegin.HasValue && loopEnd.HasValue && loopEnd.Value >= loopBegin.Value)
+        {
+            return new TemplateLoop(loopBegin.Value, loopEnd.Value);
+        }
+
+        return null;
+    }
+
+    private static int ReadVarLen(byte[] data, ref int offset)
+    {
+        var value = 0;
+        while (offset < data.Length)
+        {
+            var current = data[offset++];
+            value = (value << 7) + (current & 0x7F);
+            if ((current & 0x80) == 0)
+            {
+                break;
+            }
+        }
+
+        return value;
     }
 
     private static byte[] BuildSilentTrack()
@@ -1416,10 +2084,12 @@ public static class BgmMidiSf2Rebuilder
         return total;
     }
 
-    private static int CalculateMaxAllowedBgmLength(int originalLength)
+    private static int CalculateMaxAllowedBgmLength(int originalLength, bool midiLoop)
     {
-        var factorCap = (int)Math.Ceiling(originalLength * MaxExpandedBgmGrowthFactor);
-        return Math.Max(originalLength + MaxExpandedBgmGrowthBytes, factorCap);
+        var growthBytes = midiLoop ? MaxExpandedBgmGrowthBytes : MaxExpandedOneShotBgmGrowthBytes;
+        var growthFactor = midiLoop ? MaxExpandedBgmGrowthFactor : MaxExpandedOneShotBgmGrowthFactor;
+        var factorCap = (int)Math.Ceiling(originalLength * growthFactor);
+        return Math.Max(originalLength + growthBytes, factorCap);
     }
 
     private static void WriteDelta(List<byte> buffer, int value)
@@ -1491,7 +2161,8 @@ public static class BgmMidiSf2Rebuilder
         short[] pcm,
         bool looping,
         int loopStartSample,
-        double volume)
+        double volume,
+        bool enableShortLoopPitchCompensation)
     {
         if (authoredSamples.TryGetValue(identityKey, out var authoredSample))
         {
@@ -1499,7 +2170,7 @@ public static class BgmMidiSf2Rebuilder
         }
 
         var adjustedPcm = ApplyVolume(pcm, volume);
-        var prepared = PrepareLoopAlignedSample(adjustedPcm, looping, loopStartSample);
+        var prepared = PrepareLoopAlignedSample(adjustedPcm, looping, loopStartSample, enableShortLoopPitchCompensation);
         var encoded = PsxAdpcmEncoder.Encode(
             prepared.Pcm,
             prepared.Looping,
@@ -1510,29 +2181,81 @@ public static class BgmMidiSf2Rebuilder
             prepared.Pcm,
             encoded,
             prepared.Looping,
-            prepared.Looping ? SamplesToLoopStartBytes(prepared.LoopStartSample) : 0);
+            prepared.Looping ? SamplesToLoopStartBytes(prepared.LoopStartSample) : 0,
+            prepared.PitchOffsetSemitones);
         authoredSamples.Add(identityKey, authoredSample);
         return authoredSample;
     }
 
-    private static PreparedLoopSample PrepareLoopAlignedSample(short[] pcm, bool looping, int loopStartSample)
+    private static PreparedLoopSample PrepareLoopAlignedSample(short[] pcm, bool looping, int loopStartSample, bool enableShortLoopPitchCompensation)
     {
         if (!looping || pcm.Length == 0)
         {
-            return new PreparedLoopSample(pcm, looping, 0);
+            return new PreparedLoopSample(pcm, looping, 0, 0.0);
         }
 
         var safeLoopStart = Math.Clamp(loopStartSample, 0, Math.Max(0, pcm.Length - 1));
         var remainder = safeLoopStart % 28;
         if (remainder == 0)
         {
-            return new PreparedLoopSample(pcm, true, safeLoopStart);
+            return new PreparedLoopSample(pcm, true, safeLoopStart, 0.0);
+        }
+
+        var originalLoopLength = pcm.Length - safeLoopStart;
+        if (enableShortLoopPitchCompensation &&
+            originalLoopLength > 0 &&
+            originalLoopLength <= ShortLoopAlignmentThresholdSamples)
+        {
+            var alignedLoopStart = AlignToNearestAdpcmBoundary(safeLoopStart, allowZero: true);
+            var alignedLoopLength = AlignToNearestAdpcmBoundary(originalLoopLength, allowZero: false);
+
+            if (alignedLoopStart == safeLoopStart && alignedLoopLength == originalLoopLength)
+            {
+                return new PreparedLoopSample(pcm, true, safeLoopStart, 0.0);
+            }
+
+            var intro = alignedLoopStart > 0
+                ? AudioDsp.ResampleToLength(pcm[..safeLoopStart], alignedLoopStart)
+                : [];
+            var loop = AudioDsp.ResampleToLength(pcm[safeLoopStart..], alignedLoopLength);
+            var rebuilt = new short[intro.Length + loop.Length];
+            if (intro.Length > 0)
+            {
+                Buffer.BlockCopy(intro, 0, rebuilt, 0, intro.Length * sizeof(short));
+            }
+
+            Buffer.BlockCopy(loop, 0, rebuilt, intro.Length * sizeof(short), loop.Length * sizeof(short));
+            var pitchOffsetSemitones = 12.0 * Math.Log(originalLoopLength / (double)alignedLoopLength, 2.0);
+            return new PreparedLoopSample(rebuilt, true, alignedLoopStart, pitchOffsetSemitones);
         }
 
         // For short looping instrument samples, inserting duplicated PCM at the loop point
         // can create an audible stutter each time the sample wraps. Prefer a conservative
         // block-aligned loop that starts slightly earlier over duplicating audio content.
-        return new PreparedLoopSample(pcm, true, safeLoopStart - remainder);
+        return new PreparedLoopSample(pcm, true, safeLoopStart - remainder, 0.0);
+    }
+
+    private static int AlignToNearestAdpcmBoundary(int sampleCount, bool allowZero)
+    {
+        if (sampleCount <= 0)
+        {
+            return allowZero ? 0 : 28;
+        }
+
+        var lower = (sampleCount / 28) * 28;
+        var upper = lower == sampleCount ? lower : lower + 28;
+        if (!allowZero)
+        {
+            lower = Math.Max(28, lower);
+            upper = Math.Max(28, upper);
+        }
+
+        if (allowZero && lower < 0)
+        {
+            lower = 0;
+        }
+
+        return Math.Abs(sampleCount - lower) <= Math.Abs(upper - sampleCount) ? lower : upper;
     }
 
     private static float GetStereoLeftPan(float basePan)
@@ -1552,6 +2275,34 @@ public static class BgmMidiSf2Rebuilder
 
     private static int LoopStartBytesToSamples(int loopStartBytes)
         => Math.Max(0, (loopStartBytes / 0x10) * 28);
+
+    private static (int RootKey, int FineTuneCents) ApplySamplePitchOffset(int rootKey, int fineTuneCents, double pitchOffsetSemitones)
+    {
+        if (Math.Abs(pitchOffsetSemitones) < 0.000001)
+        {
+            return (rootKey, fineTuneCents);
+        }
+
+        var shiftedRoot = rootKey + (fineTuneCents / 100.0) + pitchOffsetSemitones;
+        SplitRootNote(shiftedRoot, out var shiftedRootKey, out var shiftedFineTune);
+        return (shiftedRootKey, shiftedFineTune);
+    }
+
+    private static AuthoredRegion RetuneRegion(AuthoredRegion region, int pitchVariantCents)
+    {
+        if (pitchVariantCents == 0)
+        {
+            return region;
+        }
+
+        var shiftedRoot = region.RootKey + (region.FineTuneCents / 100.0) - (pitchVariantCents / 100.0);
+        SplitRootNote(shiftedRoot, out var shiftedRootKey, out var shiftedFineTune);
+        return region with
+        {
+            RootKey = shiftedRootKey,
+            FineTuneCents = shiftedFineTune,
+        };
+    }
 
     private static void SplitRootNote(double rootNote, out int rootKey, out int fineTuneCents)
     {
@@ -1574,7 +2325,10 @@ public static class BgmMidiSf2Rebuilder
     private static AdsrEnvelope EncodeAdsr(SoundFontRegion region)
     {
         var sustainNibble = EncodeSustainNibble(region.SustainLevel);
-        var attack = SelectAttackProfile(SecondsToSamples(region.AttackSeconds));
+        var attackSeconds = region.AttackSeconds <= FastAttackClampSeconds
+            ? 0.0
+            : region.AttackSeconds;
+        var attack = SelectAttackProfile(SecondsToSamples(attackSeconds));
         var decay = SelectDecayProfile(sustainNibble, SecondsToSamples(region.HoldSeconds + region.DecaySeconds));
         var release = SelectReleaseProfile(sustainNibble, SecondsToSamples(region.ReleaseSeconds));
 
@@ -1873,7 +2627,8 @@ internal sealed record AuthoredRegion(
     float Volume,
     float Pan,
     AdsrEnvelope Envelope,
-    bool Stereo);
+    bool Stereo,
+    bool PreferAuthoredEnvelope);
 
 internal sealed class ActiveChannelNote
 {
@@ -1896,7 +2651,8 @@ internal sealed record AuthoredSample(
     short[] Pcm,
     byte[] EncodedBytes,
     bool Looping,
-    int LoopStartBytes);
+    int LoopStartBytes,
+    double PitchOffsetSemitones);
 
 internal sealed record AdsrEnvelope(ushort Adsr1, ushort Adsr2);
 
@@ -1908,7 +2664,11 @@ internal sealed record ReleaseAdsrProfile(int SustainNibble, bool Exponential, i
 
 internal sealed record PresetRef(int Bank, int Program);
 
-internal sealed record ProgramMapping(byte InstrumentIndex, string PresetName, int RegionCount);
+internal sealed record ProgramMapping(
+    byte InstrumentIndex,
+    string PresetName,
+    int RegionCount,
+    IReadOnlyDictionary<int, byte>? PitchVariantPrograms = null);
 
 internal sealed record AuthoredTrackPlan(int Channel, string Name, List<AuthoredTrackEvent> Events, int EventCount);
 
@@ -1941,7 +2701,11 @@ internal sealed record MidiSf2ProgramManifest(int Bank, int Program, byte Instru
 
 internal sealed record GeneratedTrack(int Channel, string Name, byte[] Bytes);
 
-internal sealed record PreparedLoopSample(short[] Pcm, bool Looping, int LoopStartSample);
+internal sealed record PreparedLoopSample(short[] Pcm, bool Looping, int LoopStartSample, double PitchOffsetSemitones);
+
+internal sealed record PitchTarget(byte Program, int Key);
+
+internal sealed record TemplateLoop(long BeginTick, long EndTick);
 
 internal sealed record TrackLayout(int Start, int Length);
 
@@ -1960,3 +2724,5 @@ internal sealed class MissingSoundFontPresetException : Exception
 
     public string AvailablePresets { get; }
 }
+
+internal sealed record MidiSf2Config(double Sf2Volume, bool MidiLoop);

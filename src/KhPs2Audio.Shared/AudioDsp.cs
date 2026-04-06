@@ -101,6 +101,29 @@ internal static class AudioDsp
         return output;
     }
 
+    public static short[] ResampleToLength(short[] input, int targetLength)
+    {
+        if (input.Length == 0 || targetLength <= 0)
+        {
+            return [];
+        }
+
+        if (input.Length == targetLength)
+        {
+            return (short[])input.Clone();
+        }
+
+        var output = new short[targetLength];
+        var step = input.Length / (double)targetLength;
+        for (var i = 0; i < targetLength; i++)
+        {
+            var position = i * step;
+            output[i] = SampleHermite(input, position);
+        }
+
+        return output;
+    }
+
     private static short[] ApplyLowPass(short[] input, int sampleRate, double cutoffHz)
     {
         if (input.Length == 0)

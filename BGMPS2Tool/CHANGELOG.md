@@ -1,5 +1,146 @@
 # CHANGELOG
 
+## v0.6.48 - 2026-04-06
+
+### Fixed
+
+- very fast MIDI+SF2 attack envelopes now keep their authored PS2 ADSR instead of always being overwritten by the template WD envelope, which restores the sharper piano transient needed by the current `152` test bank
+
+## v0.6.47 - 2026-04-06
+
+### Fixed
+
+- mirrored left/right mono SoundFont zones that still resist stereo pairing are now mixed down to a single centered authored region in the MIDI+SF2 path, which provides a reliable fallback for banks like the current `152` piano set that otherwise sound hard-left in KH2
+
+## v0.6.46 - 2026-04-06
+
+### Fixed
+
+- pseudo-stereo pairing in the MIDI+SF2 authoring pass now uses a much looser match, so left/right mono piano layers with slightly different loop or envelope metadata can still collapse into one authored stereo region instead of staying hard-left
+
+## v0.6.45 - 2026-04-06
+
+### Fixed
+
+- pseudo-stereo left/right SoundFont zone pairs are now also collapsed during the actual MIDI+SF2 authoring pass, so panned mono piano layers like the current `152` case no longer stay as competing separate WD regions
+
+## v0.6.44 - 2026-04-06
+
+### Fixed
+
+- SoundFont region normalization now collapses mirrored left/right mono zone pairs into a single authored stereo region when the source SF2 uses panned mono layers instead of linked stereo samples
+- this directly targets cases like the new `152` piano bank where KH2 would otherwise pick the left zone and sound heavily left-panned in-game
+
+## v0.6.43 - 2026-04-06
+
+### Fixed
+
+- MIDI tracks without an explicit pan controller now emit a centered pan by default instead of relying on KH2 playback defaults
+- very small imported SF2 attack values are now clamped to a hard attack when authoring PS2 ADSR, which helps sharp piano-style sounds keep their bite
+
+## v0.6.42 - 2026-04-06
+
+### Fixed
+
+- one-shot `MIDI + SF2` rebuilds (`midi_loop=0`) now use a larger but still bounded expanded-`BGM` safety cap, so denser non-looping songs like the newer `152` case can build successfully
+
+## v0.6.41 - 2026-04-06
+
+### Fixed
+
+- the conservative expanded-`BGM` size cap was raised for denser MIDI imports, so larger but still reasonable `MIDI + SF2` rebuilds do not fail prematurely
+- this helps newer `152`-style MIDI/SF2 combos author successfully when the `WD` path already resolves correctly
+
+## v0.6.40 - 2026-04-06
+
+### Fixed
+
+- MIDI + SF2 conversion now resolves missing SoundFont presets per requested bank/program instead of immediately falling back to the original WD
+- percussion presets such as missing `128/x` drum kits now prefer a bank `128` fallback before dropping to melodic bank `0`, which helps newer MIDI/SF2 combos author successfully
+
+## v0.6.39 - 2026-04-06
+
+### Fixed
+
+- removed the forced note-off injection right before the MIDI loop end because it prevented KH2-style looping in practice
+- looped MIDI rebuilds still constrain all playback tracks to the template loop window, but now leave the loop end marker sequence closer to the original KH2 pattern
+
+## v0.6.38 - 2026-04-06
+
+### Fixed
+
+- looped MIDI rebuilds now trim every authored playback track to the same template loop window instead of only constraining the first playback track
+- active notes are force-released at the loop end tick before the sequence restarts, which helps prevent stuck notes and canon-like overlap on loop
+
+## v0.6.37 - 2026-04-06
+
+### Fixed
+
+- `midi_loop` now places the authored loop end on the original KH2 template end tick instead of always writing it at the last emitted event
+- playback events at or beyond the template loop end are trimmed so the generated `BGM` follows the original loop window more faithfully
+
+## v0.6.36 - 2026-04-06
+
+### Fixed
+
+- `midi_loop` now reuses the original KH2 template loop placement instead of guessing from the first note
+- the loop writer now targets the same leading playback track pattern seen in the original `152` and `188` BGM files
+
+## v0.6.35 - 2026-04-06
+
+### Fixed
+
+- `midi_loop` now writes a real KH2-style loop pair with `0x02` for loop begin and `0x03` for loop end
+- loop markers are now emitted on all authored playback tracks instead of only writing a partial end marker to a single track
+
+## v0.6.34 - 2026-04-05
+
+### Added
+
+- new `midi_loop` config option for the MIDI + SF2 workflow
+- when enabled, the authored BGM writes a KH2-style loop marker on the first playback track instead of ending as a one-shot sequence
+
+## v0.6.33 - 2026-04-05
+
+### Fixed
+
+- pitch-bend fallback now uses fine-tuned instrument variants per bend-active preset instead of only jumping between semitone-rounded note keys
+- only presets that are actually used on pitch-bend channels get these tuned variants, so larger banks are not inflated unnecessarily
+
+## v0.6.32 - 2026-04-05
+
+### Fixed
+
+- short-loop pitch compensation is now only enabled for small simple SF2 banks instead of being applied to larger complex multi-region banks
+- this keeps tiny waveform-style sets stable without degrading larger KH2-style arrangements
+
+## v0.6.31 - 2026-04-05
+
+### Fixed
+
+- SF2 pitch compensation now picks an adaptive reference sample-rate per SoundFont instead of forcing all files through the same base rate
+- this keeps large KH2-style banks near their native ~32768 Hz behavior while still allowing smaller 32000 Hz SoundFonts to stay correct
+
+## v0.6.30 - 2026-04-05
+
+### Fixed
+
+- very short looping SF2 samples now have their loop period re-aligned to PSX ADPCM block boundaries, and the resulting pitch change is compensated back into WD root-note tuning
+- this especially improves tiny waveform-style loops whose apparent pitch was previously being skewed by 28-sample block quantization
+
+## v0.6.29 - 2026-04-05
+
+### Fixed
+
+- SF2 sample-rate pitch compensation now targets a 32 kHz KH2-style base instead of 44.1 kHz, which avoids over-transposing authored WD instruments built from 32 kHz SoundFont samples
+
+## v0.6.28 - 2026-04-05
+
+### Fixed
+
+- sparse MIDI program layouts are now compacted into dense PS2 WD instrument indices instead of creating huge hole-filled instrument tables
+- this especially improves SF2 sets that use scattered program numbers such as `27`, `28`, `31`, `83`, `89`, `93`, `104`
+
 ## v0.6.27 - 2026-04-05
 
 ### Fixed
