@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## v0.6.50 - 2026-04-06
+
+### Fixed
+
+- the fast-attack envelope override is now limited to the small single-preset piano-style SF2 case, so larger older `152` banks keep their varied template WD ADSRs instead of collapsing back to generic `000F/5FC0` envelopes that can reintroduce note echo
+
+## v0.6.49 - 2026-04-06
+
+### Fixed
+
+- short-loop pitch compensation is now re-enabled whenever a MIDI+SF2 bank contains genuinely very short looping samples, even if the overall bank is larger, which restores the earlier anti-echo fix for larger `152`-style instrument sets
+
 ## v0.6.48 - 2026-04-06
 
 ### Fixed

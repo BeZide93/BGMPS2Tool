@@ -341,6 +341,7 @@ public static class BgmMidiSf2Rebuilder
                 ? AllocateCompactInstrumentIndex(usedInstrumentIndices, ref nextCompactInstrumentIndex)
                 : AllocateInstrumentIndex(presetRef, usedInstrumentIndices);
             var normalizedRegions = CollapsePseudoStereoRegions(SoundFontParser.NormalizeRegions(preset.Regions, warnings));
+            var preferFastAttackEnvelopeForPreset = presetsToAuthor.Count == 1 && normalizedRegions.Count <= 12;
             var authoredRegions = new List<AuthoredRegion>();
             var downmixedPseudoStereoRegions = 0;
             foreach (var sourceRegion in normalizedRegions.OrderBy(static region => region.KeyHigh).ThenBy(static region => region.VelocityHigh))
@@ -379,7 +380,9 @@ public static class BgmMidiSf2Rebuilder
                 var envelope = EncodeAdsr(region);
                 var isStereo = region.StereoPcm is not null && !string.IsNullOrWhiteSpace(region.StereoIdentityKey);
                 var leftPitch = ApplySamplePitchOffset(region.RootKey, region.FineTuneCents, authoredSample.PitchOffsetSemitones);
-                var preferAuthoredEnvelope = regionWasDownmixed || region.AttackSeconds <= FastAttackClampSeconds;
+                var preferAuthoredEnvelope =
+                    regionWasDownmixed ||
+                    (preferFastAttackEnvelopeForPreset && region.AttackSeconds <= FastAttackClampSeconds);
 
                 authoredRegions.Add(new AuthoredRegion(
                     authoredSample,
@@ -775,16 +778,30 @@ public static class BgmMidiSf2Rebuilder
         HashSet<string> warnings)
     {
         var totalRegions = 0;
+        var foundVeryShortLoop = false;
         foreach (var preset in presetsToAuthor)
         {
-            totalRegions += SoundFontParser.NormalizeRegions(preset.Regions, warnings).Count;
-            if (totalRegions > 12)
+            foreach (var region in SoundFontParser.NormalizeRegions(preset.Regions, warnings))
             {
-                return false;
+                totalRegions++;
+                if (region.Looping && region.Pcm.Length > 0)
+                {
+                    var safeLoopStart = Math.Clamp(region.LoopStartSample, 0, Math.Max(0, region.Pcm.Length - 1));
+                    var loopLength = region.Pcm.Length - safeLoopStart;
+                    if (loopLength > 0 && loopLength <= ShortLoopAlignmentThresholdSamples)
+                    {
+                        foundVeryShortLoop = true;
+                    }
+                }
             }
         }
 
-        return totalRegions > 0;
+        if (foundVeryShortLoop)
+        {
+            return true;
+        }
+
+        return totalRegions > 0 && totalRegions <= 12;
     }
 
     private static List<SoundFontRegion> CollapsePseudoStereoRegions(List<SoundFontRegion> regions)
