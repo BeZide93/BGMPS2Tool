@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## v0.6.67 - 2026-04-07
+
+### Added
+
+- new `midi_pitch_bend_workaround=0|1` config option for the MIDI/SF2 workflow
+
+### Changed
+
+- when `midi_pitch_bend_workaround=0`, the converter no longer approximates pitch bend by retargeting notes or generating tuned instrument variants
+- in that mode, pitch bend events are simply ignored, which is useful for comparing bank layout and sound without extra bend-driven instrument cloning
+
 ## v0.6.66 - 2026-04-07
 
 ### Changed

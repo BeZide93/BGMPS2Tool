@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.6.66`
+Version: `v0.6.67`
 
 `BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
@@ -78,6 +78,7 @@ Supported options:
 - `sf2_pre_eq=...`
 - `sf2_pre_lowpass_hz=...`
 - `sf2_auto_lowpass=...`
+- `midi_pitch_bend_workaround=...`
 - `midi_loop=...`
 - `hold_minutes=...`
 - `pre_eq=...`
@@ -93,6 +94,7 @@ Notes:
 - `sf2_pre_eq` applies only to the MIDI/SF2 workflow. It adds the same gentle pre-conditioning curve that already exists on the WAV path, but on imported SoundFont sample data after `44100 Hz` normalization.
 - `sf2_pre_lowpass_hz` applies only to the MIDI/SF2 workflow. It is a manual low-pass override for imported SoundFont sample data after normalization. Use `0` to disable the manual override.
 - `sf2_auto_lowpass` applies only to the MIDI/SF2 workflow. When enabled, non-`44100 Hz` SoundFont samples are automatically low-passed near their original bandwidth after normalization so the rebuilt PS2 bank does not keep as much “empty” upscaled high-frequency noise. It is now an opt-in knob instead of the default.
+- `midi_pitch_bend_workaround` applies only to the MIDI/SF2 workflow. When enabled, the tool approximates pitch bend by retargeting notes and, where needed, generating tuned instrument variants. When disabled, pitch bend events are ignored completely.
 - `midi_loop` applies only to the MIDI/SF2 workflow. Use `1` if you want the authored PS2 `BGM` to loop instead of ending as a one-shot sequence.
 - `hold_minutes` is mainly relevant to the older `replacewav` loop workflow.
 - `hold_minutes` does not drive the actual note lengths in the MIDI/SF2 workflow, because those come from the MIDI sequence itself.

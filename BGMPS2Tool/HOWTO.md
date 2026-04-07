@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.6.66`
+Version: `v0.6.67`
 
 ## Goal
 
@@ -35,6 +35,7 @@ sf2_bank_mode=used
 sf2_pre_eq=0.0
 sf2_pre_lowpass_hz=0
 sf2_auto_lowpass=0
+midi_pitch_bend_workaround=1
 midi_loop=0
 hold_minutes=60
 pre_eq=0.0
@@ -49,6 +50,7 @@ Meaning:
 - `sf2_pre_eq`: optional tone shaping for imported SoundFont sample data after `44100 Hz` normalization
 - `sf2_pre_lowpass_hz`: optional manual low-pass cutoff for imported SoundFont sample data after normalization
 - `sf2_auto_lowpass`: auto low-pass non-`44100 Hz` SoundFont samples near their original bandwidth after normalization
+- `midi_pitch_bend_workaround`: enables or disables the current pitch bend approximation system for the MIDI/SF2 workflow
 - `midi_loop`: loops the authored MIDI/BGM sequence when set to `1`
 - `hold_minutes`: minimum note hold time for looped `replacewav` builds
 - `pre_eq`: optional tone shaping before PS2 encoding for the WAV workflow
@@ -64,6 +66,8 @@ Notes:
 - `sf2_pre_lowpass_hz` is a manual override if you already know the rough bandwidth you want to keep
 - `sf2_auto_lowpass=0` is now the safer default; turn it on only if a bank really benefits from it
 - normalized looping SoundFont samples now also try to pull the loop end back to a cleaner PSX-ADPCM block boundary automatically
+- `midi_pitch_bend_workaround=1` is the current default
+- `midi_pitch_bend_workaround=0` is useful for testing whether bend-driven note retargeting / tuned instrument cloning is causing layout or sound problems
 - `midi_loop=1` is useful when you want the rebuilt PS2 `BGM` to loop ingame instead of behaving like a one-shot sequence
 - if the MIDI contains explicit loop markers, `midi_loop=1` now prefers those markers
 - supported explicit markers include text markers like `loopstart` / `loopend` and control changes `CC111` / `CC110`
