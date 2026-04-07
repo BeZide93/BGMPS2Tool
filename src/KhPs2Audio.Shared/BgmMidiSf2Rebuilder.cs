@@ -20,7 +20,7 @@ public static class BgmMidiSf2Rebuilder
     private const double DefaultSf2PreLowPassHz = 0.0;
     private const bool DefaultSf2AutoLowPass = false;
     private const bool DefaultMidiPitchBendWorkaround = true;
-    private const MidiProgramCompactionMode DefaultMidiProgramCompaction = MidiProgramCompactionMode.Auto;
+    private const MidiProgramCompactionMode DefaultMidiProgramCompaction = MidiProgramCompactionMode.Compact;
     private const ushort DefaultPpqn = 48;
     private const int MaxAuthoredWdBytes = 980 * 1024;
     private const int MaxAuthoredBgmBytes = 48_900;
