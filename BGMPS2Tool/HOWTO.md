@@ -35,6 +35,7 @@ sf2_bank_mode=used
 sf2_pre_eq=0.0
 sf2_pre_lowpass_hz=0
 sf2_auto_lowpass=0
+midi_program_compaction=auto
 midi_pitch_bend_workaround=1
 midi_loop=0
 hold_minutes=60
@@ -50,6 +51,7 @@ Meaning:
 - `sf2_pre_eq`: optional tone shaping for imported SoundFont sample data after `44100 Hz` normalization
 - `sf2_pre_lowpass_hz`: optional manual low-pass cutoff for imported SoundFont sample data after normalization
 - `sf2_auto_lowpass`: auto low-pass non-`44100 Hz` SoundFont samples near their original bandwidth after normalization
+- `midi_program_compaction`: controls whether sparse MIDI program numbers stay sparse in the authored WD or get renumbered densely
 - `midi_pitch_bend_workaround`: enables or disables the current pitch bend approximation system for the MIDI/SF2 workflow
 - `midi_loop`: loops the authored MIDI/BGM sequence when set to `1`
 - `hold_minutes`: minimum note hold time for looped `replacewav` builds
@@ -66,6 +68,9 @@ Notes:
 - `sf2_pre_lowpass_hz` is a manual override if you already know the rough bandwidth you want to keep
 - `sf2_auto_lowpass=0` is now the safer default; turn it on only if a bank really benefits from it
 - normalized looping SoundFont samples now also try to pull the loop end back to a cleaner PSX-ADPCM block boundary automatically
+- `midi_program_compaction=auto` keeps the current heuristic
+- `midi_program_compaction=compact` removes empty sparse WD slots and renumbers real instruments densely
+- `midi_program_compaction=preserve` keeps original-style sparse program indices and any resulting WD table gaps
 - `midi_pitch_bend_workaround=1` is the current default
 - `midi_pitch_bend_workaround=0` is useful for testing whether bend-driven note retargeting / tuned instrument cloning is causing layout or sound problems
 - `midi_loop=1` is useful when you want the rebuilt PS2 `BGM` to loop ingame instead of behaving like a one-shot sequence
@@ -165,6 +170,7 @@ the tool authors the full SoundFont bank into the rebuilt `WD`, not just the pre
 - log output says `converted but unused`
 - SoundFont-derived ADSRs are preferred for authored regions
 - pitch-variant cloning is disabled to keep the bank layout simpler for pairing with existing `BGM` files
+- if you want to hear the same MIDI/SF2 case without sparse WD gaps, keep `sf2_bank_mode=used` and set `midi_program_compaction=compact`
 
 Output:
 

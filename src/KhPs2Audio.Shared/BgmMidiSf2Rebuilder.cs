@@ -12,6 +12,7 @@ public static class BgmMidiSf2Rebuilder
     private const string Sf2PreLowPassHzKey = "sf2_pre_lowpass_hz";
     private const string Sf2AutoLowPassKey = "sf2_auto_lowpass";
     private const string MidiPitchBendWorkaroundKey = "midi_pitch_bend_workaround";
+    private const string MidiProgramCompactionKey = "midi_program_compaction";
     private const double DefaultSf2Volume = 1.0;
     private const bool DefaultMidiLoop = false;
     private const Sf2BankMode DefaultSf2BankMode = Sf2BankMode.Used;
@@ -19,6 +20,7 @@ public static class BgmMidiSf2Rebuilder
     private const double DefaultSf2PreLowPassHz = 0.0;
     private const bool DefaultSf2AutoLowPass = false;
     private const bool DefaultMidiPitchBendWorkaround = true;
+    private const MidiProgramCompactionMode DefaultMidiProgramCompaction = MidiProgramCompactionMode.Auto;
     private const ushort DefaultPpqn = 48;
     private const int MaxAuthoredWdBytes = 980 * 1024;
     private const int MaxAuthoredBgmBytes = 48_900;
@@ -66,6 +68,7 @@ public static class BgmMidiSf2Rebuilder
         var midiLoop = config.MidiLoop;
         var sf2BankMode = config.Sf2BankMode;
         var midiPitchBendWorkaround = config.MidiPitchBendWorkaround;
+        var midiProgramCompaction = config.MidiProgramCompaction;
         var midi = MidiFileParser.Parse(inputMidiPath);
         var sf2Path = ResolveSoundFontPath(soundFontPath, assetDirectory, bgmInfo.BankId);
         var wdBank = WdBankFile.Load(wdPath);
@@ -80,7 +83,7 @@ public static class BgmMidiSf2Rebuilder
                 var soundFont = SoundFontParser.Parse(
                     sf2Path,
                     new SoundFontImportOptions(config.Sf2PreEqStrength, config.Sf2PreLowPassHz, config.Sf2AutoLowPass));
-                plan = BuildPlan(midi, soundFont, volume, sf2BankMode, midiPitchBendWorkaround, log);
+                plan = BuildPlan(midi, soundFont, volume, sf2BankMode, midiProgramCompaction, midiPitchBendWorkaround, log);
                 plan = ConstrainPlanToWdBudget(plan, MaxAuthoredWdBytes, log);
                 outputWd = BuildWd(wdPath, bgmInfo.BankId, plan, log);
                 programSourceLabel = Path.GetFileName(sf2Path);
@@ -206,8 +209,8 @@ public static class BgmMidiSf2Rebuilder
         if (!File.Exists(configPath))
         {
             log.WriteLine(
-                $"Config: {ConfigFileName} not found next to the tool. Using default {Sf2VolumeKey}={DefaultSf2Volume:0.###}, {MidiLoopKey}=0, {Sf2BankModeKey}={DefaultSf2BankMode.ToString().ToLowerInvariant()}, {Sf2PreEqKey}={DefaultSf2PreEqStrength:0.###}, {Sf2PreLowPassHzKey}={DefaultSf2PreLowPassHz:0.###}, {Sf2AutoLowPassKey}=0, and {MidiPitchBendWorkaroundKey}=1 for MIDI/SF2 conversion.");
-            return new MidiSf2Config(DefaultSf2Volume, DefaultMidiLoop, DefaultSf2BankMode, DefaultSf2PreEqStrength, DefaultSf2PreLowPassHz, DefaultSf2AutoLowPass, DefaultMidiPitchBendWorkaround);
+                $"Config: {ConfigFileName} not found next to the tool. Using default {Sf2VolumeKey}={DefaultSf2Volume:0.###}, {MidiLoopKey}=0, {Sf2BankModeKey}={DefaultSf2BankMode.ToString().ToLowerInvariant()}, {Sf2PreEqKey}={DefaultSf2PreEqStrength:0.###}, {Sf2PreLowPassHzKey}={DefaultSf2PreLowPassHz:0.###}, {Sf2AutoLowPassKey}=0, {MidiProgramCompactionKey}={DefaultMidiProgramCompaction.ToString().ToLowerInvariant()}, and {MidiPitchBendWorkaroundKey}=1 for MIDI/SF2 conversion.");
+            return new MidiSf2Config(DefaultSf2Volume, DefaultMidiLoop, DefaultSf2BankMode, DefaultSf2PreEqStrength, DefaultSf2PreLowPassHz, DefaultSf2AutoLowPass, DefaultMidiPitchBendWorkaround, DefaultMidiProgramCompaction);
         }
 
         var volume = DefaultSf2Volume;
@@ -217,6 +220,7 @@ public static class BgmMidiSf2Rebuilder
         var sf2PreLowPassHz = DefaultSf2PreLowPassHz;
         var sf2AutoLowPass = DefaultSf2AutoLowPass;
         var midiPitchBendWorkaround = DefaultMidiPitchBendWorkaround;
+        var midiProgramCompaction = DefaultMidiProgramCompaction;
         var foundExplicitSf2Volume = false;
         var foundExplicitMidiLoop = false;
         var foundExplicitSf2BankMode = false;
@@ -224,6 +228,7 @@ public static class BgmMidiSf2Rebuilder
         var foundExplicitSf2PreLowPass = false;
         var foundExplicitSf2AutoLowPass = false;
         var foundExplicitMidiPitchBendWorkaround = false;
+        var foundExplicitMidiProgramCompaction = false;
         foreach (var rawLine in File.ReadAllLines(configPath))
         {
             var line = rawLine.Trim();
@@ -322,6 +327,18 @@ public static class BgmMidiSf2Rebuilder
                 }
 
                 foundExplicitMidiPitchBendWorkaround = true;
+                continue;
+            }
+
+            if (key.Equals(MidiProgramCompactionKey, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryParseMidiProgramCompactionMode(valueText, out midiProgramCompaction))
+                {
+                    log.WriteLine($"Config warning: could not parse {MidiProgramCompactionKey}={valueText}. Use 'auto', 'compact', or 'preserve'. Using the current value.");
+                    midiProgramCompaction = DefaultMidiProgramCompaction;
+                }
+
+                foundExplicitMidiProgramCompaction = true;
             }
         }
 
@@ -366,12 +383,15 @@ public static class BgmMidiSf2Rebuilder
         var sf2AutoLowPassLabel = foundExplicitSf2AutoLowPass
             ? $"{Sf2AutoLowPassKey}={(sf2AutoLowPass ? 1 : 0)}"
             : $"{Sf2AutoLowPassKey} not set, using default {Sf2AutoLowPassKey}={(DefaultSf2AutoLowPass ? 1 : 0)}";
+        var programCompactionLabel = foundExplicitMidiProgramCompaction
+            ? $"{MidiProgramCompactionKey}={midiProgramCompaction.ToString().ToLowerInvariant()}"
+            : $"{MidiProgramCompactionKey} not set, using default {MidiProgramCompactionKey}={DefaultMidiProgramCompaction.ToString().ToLowerInvariant()}";
         var pitchWorkaroundLabel = foundExplicitMidiPitchBendWorkaround
             ? $"{MidiPitchBendWorkaroundKey}={(midiPitchBendWorkaround ? 1 : 0)}"
             : $"{MidiPitchBendWorkaroundKey} not set, using default {MidiPitchBendWorkaroundKey}={(DefaultMidiPitchBendWorkaround ? 1 : 0)}";
-        log.WriteLine($"Config: loaded {configPath} -> {volumeLabel}; {loopLabel}; {bankModeLabel}; {sf2EqLabel}; {sf2LowPassLabel}; {sf2AutoLowPassLabel}; {pitchWorkaroundLabel}");
+        log.WriteLine($"Config: loaded {configPath} -> {volumeLabel}; {loopLabel}; {bankModeLabel}; {sf2EqLabel}; {sf2LowPassLabel}; {sf2AutoLowPassLabel}; {programCompactionLabel}; {pitchWorkaroundLabel}");
 
-        return new MidiSf2Config(volume, midiLoop, sf2BankMode, sf2PreEqStrength, sf2PreLowPassHz, sf2AutoLowPass, midiPitchBendWorkaround);
+        return new MidiSf2Config(volume, midiLoop, sf2BankMode, sf2PreEqStrength, sf2PreLowPassHz, sf2AutoLowPass, midiPitchBendWorkaround, midiProgramCompaction);
     }
 
     private static bool TryParseConfigDouble(string valueText, out double value)
@@ -422,7 +442,39 @@ public static class BgmMidiSf2Rebuilder
         }
     }
 
-    private static ConversionPlan BuildPlan(MidiFile midi, SoundFontFile soundFont, double volume, Sf2BankMode sf2BankMode, bool enablePitchBendWorkaround, TextWriter log)
+    private static bool TryParseMidiProgramCompactionMode(string valueText, out MidiProgramCompactionMode mode)
+    {
+        switch (valueText.Trim().ToLowerInvariant())
+        {
+            case "auto":
+            case "default":
+            case "heuristic":
+                mode = MidiProgramCompactionMode.Auto;
+                return true;
+            case "1":
+            case "true":
+            case "yes":
+            case "on":
+            case "compact":
+            case "dense":
+                mode = MidiProgramCompactionMode.Compact;
+                return true;
+            case "0":
+            case "false":
+            case "no":
+            case "off":
+            case "preserve":
+            case "sparse":
+            case "original":
+                mode = MidiProgramCompactionMode.Preserve;
+                return true;
+            default:
+                mode = DefaultMidiProgramCompaction;
+                return false;
+        }
+    }
+
+    private static ConversionPlan BuildPlan(MidiFile midi, SoundFontFile soundFont, double volume, Sf2BankMode sf2BankMode, MidiProgramCompactionMode midiProgramCompaction, bool enablePitchBendWorkaround, TextWriter log)
     {
         var warnings = new HashSet<string>(soundFont.Warnings, StringComparer.Ordinal);
         var usedPresetRefs = GetUsedPresetRefs(midi);
@@ -476,8 +528,16 @@ public static class BgmMidiSf2Rebuilder
             log.WriteLine($"Pitch variants: disabled for this build because one or more MIDI presets had to fall back to different SoundFont presets ({fallbackList}). Keeping the authored WD/BGM layout simpler for KH2 compatibility.");
         }
 
-        var compactSparsePrograms = sf2BankMode == Sf2BankMode.Used && ShouldCompactSparsePrograms(usedPresetRefs, effectivePitchVariantPresetRefs);
-        if (compactSparsePrograms)
+        var compactSparsePrograms = ResolveProgramCompactionMode(midiProgramCompaction, sf2BankMode, usedPresetRefs, effectivePitchVariantPresetRefs);
+        if (midiProgramCompaction == MidiProgramCompactionMode.Compact)
+        {
+            log.WriteLine("Program compaction: forced on via config; using dense PS2 instrument indices and removing sparse WD table gaps.");
+        }
+        else if (midiProgramCompaction == MidiProgramCompactionMode.Preserve)
+        {
+            log.WriteLine("Program compaction: forced off via config; preserving sparse/original-style PS2 instrument indices and any WD table gaps.");
+        }
+        else if (compactSparsePrograms)
         {
             log.WriteLine("Program compaction: using dense PS2 instrument indices for sparse MIDI program numbers.");
         }
@@ -954,6 +1014,20 @@ public static class BgmMidiSf2Rebuilder
         }
 
         throw new InvalidDataException("The converted MIDI references more than 256 authored instruments, which exceeds the PS2 BGM program limit.");
+    }
+
+    private static bool ResolveProgramCompactionMode(
+        MidiProgramCompactionMode mode,
+        Sf2BankMode sf2BankMode,
+        IReadOnlyCollection<PresetRef> usedPresetRefs,
+        IReadOnlyCollection<PresetRef> pitchVariantPresetRefs)
+    {
+        return mode switch
+        {
+            MidiProgramCompactionMode.Compact => true,
+            MidiProgramCompactionMode.Preserve => false,
+            _ => sf2BankMode == Sf2BankMode.Used && ShouldCompactSparsePrograms(usedPresetRefs, pitchVariantPresetRefs),
+        };
     }
 
     private static bool ShouldCompactSparsePrograms(
@@ -3164,9 +3238,17 @@ internal sealed record MidiSf2Config(
     double Sf2PreEqStrength,
     double Sf2PreLowPassHz,
     bool Sf2AutoLowPass,
-    bool MidiPitchBendWorkaround);
+    bool MidiPitchBendWorkaround,
+    MidiProgramCompactionMode MidiProgramCompaction);
 internal enum Sf2BankMode
 {
     Used,
     Full,
+}
+
+internal enum MidiProgramCompactionMode
+{
+    Auto,
+    Compact,
+    Preserve,
 }

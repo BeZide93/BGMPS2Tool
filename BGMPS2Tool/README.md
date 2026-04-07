@@ -78,6 +78,7 @@ Supported options:
 - `sf2_pre_eq=...`
 - `sf2_pre_lowpass_hz=...`
 - `sf2_auto_lowpass=...`
+- `midi_program_compaction=...`
 - `midi_pitch_bend_workaround=...`
 - `midi_loop=...`
 - `hold_minutes=...`
@@ -94,6 +95,10 @@ Notes:
 - `sf2_pre_eq` applies only to the MIDI/SF2 workflow. It adds the same gentle pre-conditioning curve that already exists on the WAV path, but on imported SoundFont sample data after `44100 Hz` normalization.
 - `sf2_pre_lowpass_hz` applies only to the MIDI/SF2 workflow. It is a manual low-pass override for imported SoundFont sample data after normalization. Use `0` to disable the manual override.
 - `sf2_auto_lowpass` applies only to the MIDI/SF2 workflow. When enabled, non-`44100 Hz` SoundFont samples are automatically low-passed near their original bandwidth after normalization so the rebuilt PS2 bank does not keep as much “empty” upscaled high-frequency noise. It is now an opt-in knob instead of the default.
+- `midi_program_compaction` applies only to the MIDI/SF2 workflow.
+  - `auto` = keep the current heuristic
+  - `compact` = remove sparse WD table gaps and renumber authored instruments densely
+  - `preserve` = keep original-style sparse program indices even if that leaves empty WD slots between real instruments
 - `midi_pitch_bend_workaround` applies only to the MIDI/SF2 workflow. When enabled, the tool approximates pitch bend by retargeting notes and, where needed, generating tuned instrument variants. When disabled, pitch bend events are ignored completely.
 - `midi_loop` applies only to the MIDI/SF2 workflow. Use `1` if you want the authored PS2 `BGM` to loop instead of ending as a one-shot sequence.
 - `hold_minutes` is mainly relevant to the older `replacewav` loop workflow.
@@ -147,6 +152,7 @@ If no usable `.sf2` is found, the tool can fall back to the original `waveXXXX.w
 - normalized looping SoundFont samples now also pull the loop end back to a clean PSX-ADPCM block boundary when possible, which is intended to reduce glitchy wraparound on rebuilt short loops
 - The current MIDI importer approximates pitch-bend, but it still does not emit a fully native KH2 continuous pitch opcode.
 - if you only need a converted `WD` bank for pairing with existing `BGM` files, `sf2_bank_mode=full` is useful because it converts unused SoundFont presets too instead of authoring only the presets referenced by the current MIDI
+- if you specifically want to test the same MIDI/SF2 case without sparse WD table gaps, set `midi_program_compaction=compact`
 - If a MIDI does not match the available `.sf2`, the tool will now try to use the original `waveXXXX.wd` as the program source before failing.
 - The MIDI path now writes a compact `BGM` track table for closer `MID -> BGM -> MID` roundtrip fidelity. Very dense MIDIs are rejected once the rebuilt `BGM` would exceed the hard `48900`-byte safety cap.
 - Newly authored multi-sample `WD` files now insert KH2-style 16-byte zero separators between sample chunks instead of packing all sample data directly back-to-back.

@@ -5,11 +5,13 @@
 ### Added
 
 - new `midi_pitch_bend_workaround=0|1` config option for the MIDI/SF2 workflow
+- new `midi_program_compaction=auto|compact|preserve` config option so sparse WD gaps can be preserved or removed explicitly during MIDI/SF2 rebuilds
 
 ### Changed
 
 - when `midi_pitch_bend_workaround=0`, the converter no longer approximates pitch bend by retargeting notes or generating tuned instrument variants
 - in that mode, pitch bend events are simply ignored, which is useful for comparing bank layout and sound without extra bend-driven instrument cloning
+- `midi_program_compaction=compact` now forces dense instrument renumbering even when the default heuristic would otherwise preserve sparse/original-style WD slots
 
 ## v0.6.66 - 2026-04-07
 
