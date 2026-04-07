@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.6.69`
+Version: `v0.6.70`
 
 `BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
@@ -24,6 +24,8 @@ Current hard caps:
 The MIDI/BGM rebuild path now also trims per-track padding aggressively. The tool still writes the track-size table and, for looped builds, preserves the original KH2 track-slot structure, but it no longer pads every track back up to the original template slot length if those bytes are unused.
 
 Short-loop handling on tricky MIDI/SF2 material has also been re-balanced again so the current loop/pitch behavior stays much closer to the good `v0.6.67` sound on tracks like `152`, while still keeping the newer ADSR controls and diagnostics.
+
+The MIDI/SF2 pitch path now also keeps a single canonical `UnityKey/FineTune` representation internally, so tiny residual pitch offsets are less likely to cause unnecessary retuning on random instruments.
 
 ## Included Files
 
