@@ -13,6 +13,7 @@ public static class BgmMidiSf2Rebuilder
     private const string Sf2AutoLowPassKey = "sf2_auto_lowpass";
     private const string MidiPitchBendWorkaroundKey = "midi_pitch_bend_workaround";
     private const string MidiProgramCompactionKey = "midi_program_compaction";
+    private const string AdsrModeKey = "adsr";
     private const double DefaultSf2Volume = 1.0;
     private const bool DefaultMidiLoop = false;
     private const Sf2BankMode DefaultSf2BankMode = Sf2BankMode.Used;
@@ -21,6 +22,7 @@ public static class BgmMidiSf2Rebuilder
     private const bool DefaultSf2AutoLowPass = false;
     private const bool DefaultMidiPitchBendWorkaround = true;
     private const MidiProgramCompactionMode DefaultMidiProgramCompaction = MidiProgramCompactionMode.Compact;
+    private const MidiSf2AdsrMode DefaultMidiSf2AdsrMode = MidiSf2AdsrMode.Authored;
     private const ushort DefaultPpqn = 48;
     private const int MaxAuthoredWdBytes = 980 * 1024;
     private const int MaxAuthoredBgmBytes = 48_900;
@@ -31,13 +33,16 @@ public static class BgmMidiSf2Rebuilder
     private const int DefaultMidiPanCenter = 64;
     private const double FastAttackClampSeconds = 0.125;
     private const int SpuSampleRate = 44100;
+    private const int Ps2AdsrSampleRate = 48_000;
     private const int SpuMaxLevel = 0x7FFF;
+    private const int PsxEnvelopeMaxLevel = 0x7FFFFFFF;
     private const int MaxEnvelopeSearchSamples = SpuSampleRate * 120;
     private const int ShortLoopAlignmentThresholdSamples = 512;
     private const int PitchVariantStepCents = 25;
     private const int PitchVariantMaxResidualCents = 50;
     private const int SustainHoldShift = 31;
     private const int SustainHoldStep = 3;
+    private static readonly uint[] PsxRateTable = BuildPsxRateTable();
     private static readonly IReadOnlyList<AttackAdsrProfile> AttackProfiles = BuildAttackProfiles();
     private static readonly IReadOnlyList<DecayAdsrProfile> DecayProfiles = BuildDecayProfiles();
     private static readonly IReadOnlyList<ReleaseAdsrProfile> ReleaseProfiles = BuildReleaseProfiles();
@@ -69,6 +74,7 @@ public static class BgmMidiSf2Rebuilder
         var sf2BankMode = config.Sf2BankMode;
         var midiPitchBendWorkaround = config.MidiPitchBendWorkaround;
         var midiProgramCompaction = config.MidiProgramCompaction;
+        var adsrMode = config.AdsrMode;
         var midi = MidiFileParser.Parse(inputMidiPath);
         var sf2Path = ResolveSoundFontPath(soundFontPath, assetDirectory, bgmInfo.BankId);
         var wdBank = WdBankFile.Load(wdPath);
@@ -83,7 +89,7 @@ public static class BgmMidiSf2Rebuilder
                 var soundFont = SoundFontParser.Parse(
                     sf2Path,
                     new SoundFontImportOptions(config.Sf2PreEqStrength, config.Sf2PreLowPassHz, config.Sf2AutoLowPass));
-                plan = BuildPlan(midi, soundFont, volume, sf2BankMode, midiProgramCompaction, midiPitchBendWorkaround, log);
+                plan = BuildPlan(midi, soundFont, wdBank, volume, sf2BankMode, midiProgramCompaction, adsrMode, midiPitchBendWorkaround, log);
                 plan = ConstrainPlanToWdBudget(plan, MaxAuthoredWdBytes, log);
                 outputWd = BuildWd(wdPath, bgmInfo.BankId, plan, log);
                 programSourceLabel = Path.GetFileName(sf2Path);
@@ -116,6 +122,7 @@ public static class BgmMidiSf2Rebuilder
 
         File.WriteAllBytes(outputBgmPath, outputBgm);
         File.WriteAllBytes(outputWdPath, outputWd);
+        var instrumentManifests = BuildInstrumentManifests(wdPath, plan);
         File.WriteAllText(
             manifestPath,
             JsonSerializer.Serialize(
@@ -126,6 +133,7 @@ public static class BgmMidiSf2Rebuilder
                     Path.GetFileName(outputWdPath),
                     plan.TrackPlans.Select(static track => new MidiSf2TrackManifest(track.Channel, track.Name, track.EventCount)).ToList(),
                     plan.ProgramMap.Select(entry => new MidiSf2ProgramManifest(entry.Key.Bank, entry.Key.Program, entry.Value.InstrumentIndex, entry.Value.PresetName, entry.Value.RegionCount)).OrderBy(static entry => entry.Bank).ThenBy(static entry => entry.Program).ToList(),
+                    instrumentManifests,
                     plan.Warnings),
                 new JsonSerializerOptions { WriteIndented = true }));
 
@@ -209,8 +217,8 @@ public static class BgmMidiSf2Rebuilder
         if (!File.Exists(configPath))
         {
             log.WriteLine(
-                $"Config: {ConfigFileName} not found next to the tool. Using default {Sf2VolumeKey}={DefaultSf2Volume:0.###}, {MidiLoopKey}=0, {Sf2BankModeKey}={DefaultSf2BankMode.ToString().ToLowerInvariant()}, {Sf2PreEqKey}={DefaultSf2PreEqStrength:0.###}, {Sf2PreLowPassHzKey}={DefaultSf2PreLowPassHz:0.###}, {Sf2AutoLowPassKey}=0, {MidiProgramCompactionKey}={DefaultMidiProgramCompaction.ToString().ToLowerInvariant()}, and {MidiPitchBendWorkaroundKey}=1 for MIDI/SF2 conversion.");
-            return new MidiSf2Config(DefaultSf2Volume, DefaultMidiLoop, DefaultSf2BankMode, DefaultSf2PreEqStrength, DefaultSf2PreLowPassHz, DefaultSf2AutoLowPass, DefaultMidiPitchBendWorkaround, DefaultMidiProgramCompaction);
+                $"Config: {ConfigFileName} not found next to the tool. Using default {Sf2VolumeKey}={DefaultSf2Volume:0.###}, {MidiLoopKey}=0, {Sf2BankModeKey}={DefaultSf2BankMode.ToString().ToLowerInvariant()}, {Sf2PreEqKey}={DefaultSf2PreEqStrength:0.###}, {Sf2PreLowPassHzKey}={DefaultSf2PreLowPassHz:0.###}, {Sf2AutoLowPassKey}=0, {MidiProgramCompactionKey}={DefaultMidiProgramCompaction.ToString().ToLowerInvariant()}, {AdsrModeKey}={DefaultMidiSf2AdsrMode.ToString().ToLowerInvariant()}, and {MidiPitchBendWorkaroundKey}=1 for MIDI/SF2 conversion.");
+            return new MidiSf2Config(DefaultSf2Volume, DefaultMidiLoop, DefaultSf2BankMode, DefaultSf2PreEqStrength, DefaultSf2PreLowPassHz, DefaultSf2AutoLowPass, DefaultMidiPitchBendWorkaround, DefaultMidiProgramCompaction, DefaultMidiSf2AdsrMode);
         }
 
         var volume = DefaultSf2Volume;
@@ -221,6 +229,7 @@ public static class BgmMidiSf2Rebuilder
         var sf2AutoLowPass = DefaultSf2AutoLowPass;
         var midiPitchBendWorkaround = DefaultMidiPitchBendWorkaround;
         var midiProgramCompaction = DefaultMidiProgramCompaction;
+        var adsrMode = DefaultMidiSf2AdsrMode;
         var foundExplicitSf2Volume = false;
         var foundExplicitMidiLoop = false;
         var foundExplicitSf2BankMode = false;
@@ -229,6 +238,7 @@ public static class BgmMidiSf2Rebuilder
         var foundExplicitSf2AutoLowPass = false;
         var foundExplicitMidiPitchBendWorkaround = false;
         var foundExplicitMidiProgramCompaction = false;
+        var foundExplicitAdsrMode = false;
         foreach (var rawLine in File.ReadAllLines(configPath))
         {
             var line = rawLine.Trim();
@@ -339,6 +349,18 @@ public static class BgmMidiSf2Rebuilder
                 }
 
                 foundExplicitMidiProgramCompaction = true;
+                continue;
+            }
+
+            if (key.Equals(AdsrModeKey, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryParseMidiSf2AdsrMode(valueText, out adsrMode))
+                {
+                    log.WriteLine($"Config warning: could not parse {AdsrModeKey}={valueText}. Use 'auto', 'authored', or 'template'. Using the current value.");
+                    adsrMode = DefaultMidiSf2AdsrMode;
+                }
+
+                foundExplicitAdsrMode = true;
             }
         }
 
@@ -386,12 +408,15 @@ public static class BgmMidiSf2Rebuilder
         var programCompactionLabel = foundExplicitMidiProgramCompaction
             ? $"{MidiProgramCompactionKey}={midiProgramCompaction.ToString().ToLowerInvariant()}"
             : $"{MidiProgramCompactionKey} not set, using default {MidiProgramCompactionKey}={DefaultMidiProgramCompaction.ToString().ToLowerInvariant()}";
+        var adsrModeLabel = foundExplicitAdsrMode
+            ? $"{AdsrModeKey}={adsrMode.ToString().ToLowerInvariant()}"
+            : $"{AdsrModeKey} not set, using default {AdsrModeKey}={DefaultMidiSf2AdsrMode.ToString().ToLowerInvariant()}";
         var pitchWorkaroundLabel = foundExplicitMidiPitchBendWorkaround
             ? $"{MidiPitchBendWorkaroundKey}={(midiPitchBendWorkaround ? 1 : 0)}"
             : $"{MidiPitchBendWorkaroundKey} not set, using default {MidiPitchBendWorkaroundKey}={(DefaultMidiPitchBendWorkaround ? 1 : 0)}";
-        log.WriteLine($"Config: loaded {configPath} -> {volumeLabel}; {loopLabel}; {bankModeLabel}; {sf2EqLabel}; {sf2LowPassLabel}; {sf2AutoLowPassLabel}; {programCompactionLabel}; {pitchWorkaroundLabel}");
+        log.WriteLine($"Config: loaded {configPath} -> {volumeLabel}; {loopLabel}; {bankModeLabel}; {sf2EqLabel}; {sf2LowPassLabel}; {sf2AutoLowPassLabel}; {programCompactionLabel}; {adsrModeLabel}; {pitchWorkaroundLabel}");
 
-        return new MidiSf2Config(volume, midiLoop, sf2BankMode, sf2PreEqStrength, sf2PreLowPassHz, sf2AutoLowPass, midiPitchBendWorkaround, midiProgramCompaction);
+        return new MidiSf2Config(volume, midiLoop, sf2BankMode, sf2PreEqStrength, sf2PreLowPassHz, sf2AutoLowPass, midiPitchBendWorkaround, midiProgramCompaction, adsrMode);
     }
 
     private static bool TryParseConfigDouble(string valueText, out double value)
@@ -474,7 +499,32 @@ public static class BgmMidiSf2Rebuilder
         }
     }
 
-    private static ConversionPlan BuildPlan(MidiFile midi, SoundFontFile soundFont, double volume, Sf2BankMode sf2BankMode, MidiProgramCompactionMode midiProgramCompaction, bool enablePitchBendWorkaround, TextWriter log)
+    private static bool TryParseMidiSf2AdsrMode(string valueText, out MidiSf2AdsrMode mode)
+    {
+        switch (valueText.Trim().ToLowerInvariant())
+        {
+            case "auto":
+            case "default":
+            case "hybrid":
+                mode = MidiSf2AdsrMode.Auto;
+                return true;
+            case "authored":
+            case "vgmtrans":
+            case "sf2":
+                mode = MidiSf2AdsrMode.Authored;
+                return true;
+            case "template":
+            case "original":
+            case "wd":
+                mode = MidiSf2AdsrMode.Template;
+                return true;
+            default:
+                mode = DefaultMidiSf2AdsrMode;
+                return false;
+        }
+    }
+
+    private static ConversionPlan BuildPlan(MidiFile midi, SoundFontFile soundFont, WdBankFile templateBank, double volume, Sf2BankMode sf2BankMode, MidiProgramCompactionMode midiProgramCompaction, MidiSf2AdsrMode adsrMode, bool enablePitchBendWorkaround, TextWriter log)
     {
         var warnings = new HashSet<string>(soundFont.Warnings, StringComparer.Ordinal);
         var usedPresetRefs = GetUsedPresetRefs(midi);
@@ -568,6 +618,15 @@ public static class BgmMidiSf2Rebuilder
             log.WriteLine("Short-loop pitch compensation: enabled for simple waveform-style SF2 content.");
         }
 
+        var templateRegionsByInstrument = templateBank.Regions
+            .GroupBy(static region => region.InstrumentIndex)
+            .ToDictionary(static group => group.Key, static group => group.OrderBy(region => region.RegionIndex).ToList());
+        var sourceLoopingRegionCount = 0;
+        var sourceOneShotRegionCount = 0;
+        var templateForcedOneShotRegionCount = 0;
+        var exactTemplateOneShotMatchCount = 0;
+        var templateInstrumentAllOneShotCount = 0;
+        var sourceLoopPreservedCount = 0;
         var nextCompactInstrumentIndex = 0;
         foreach (var preset in presetsToAuthor)
         {
@@ -604,24 +663,71 @@ public static class BgmMidiSf2Rebuilder
                     regionWasDownmixed = true;
                 }
 
+                var isStereo = region.StereoPcm is not null && !string.IsNullOrWhiteSpace(region.StereoIdentityKey);
+                var loopPolicy = ResolveLoopPolicy(
+                    templateBank,
+                    templateRegionsByInstrument,
+                    preset.Program,
+                    region.KeyLow,
+                    region.KeyHigh,
+                    region.VelocityLow,
+                    region.VelocityHigh,
+                    isStereo,
+                    region.Looping,
+                    region.LoopStartSample);
+                if (region.Looping)
+                {
+                    sourceLoopingRegionCount++;
+                    if (loopPolicy.Looping)
+                    {
+                        sourceLoopPreservedCount++;
+                    }
+                    else
+                    {
+                        templateForcedOneShotRegionCount++;
+                        if (string.Equals(loopPolicy.LoopTemplateMatchKind, "exact_one_shot_match", StringComparison.Ordinal))
+                        {
+                            exactTemplateOneShotMatchCount++;
+                        }
+                        else if (string.Equals(loopPolicy.LoopTemplateMatchKind, "instrument_all_one_shot", StringComparison.Ordinal))
+                        {
+                            templateInstrumentAllOneShotCount++;
+                        }
+                    }
+                }
+                else
+                {
+                    sourceOneShotRegionCount++;
+                }
+
+                var authoredIdentityKey = BuildLoopAwareIdentityKey(region.IdentityKey, loopPolicy.Looping, loopPolicy.LoopStartSample);
                 var authoredSample = GetOrAddAuthoredSample(
                     authoredSamples,
-                    region.IdentityKey,
+                    authoredIdentityKey,
                     region.SourceSampleName,
                     region.Pcm,
-                    region.Looping,
-                    region.LoopStartSample,
+                    loopPolicy.Looping,
+                    loopPolicy.LoopStartSample,
                     volume,
                     enableShortLoopPitchCompensation);
                 var envelope = EncodeAdsr(region);
-                var isStereo = region.StereoPcm is not null && !string.IsNullOrWhiteSpace(region.StereoIdentityKey);
                 var leftPitch = ApplySamplePitchOffset(region.RootKey, region.FineTuneCents, authoredSample.PitchOffsetSemitones);
-                var preferAuthoredEnvelope =
-                    sf2BankMode == Sf2BankMode.Full ||
-                    regionWasDownmixed ||
-                    (preferFastAttackEnvelopeForPreset && region.AttackSeconds <= FastAttackClampSeconds);
-
-                authoredRegions.Add(new AuthoredRegion(
+                var sourceInfo = new AuthoredRegionSourceInfo(
+                    region.SourceSampleName,
+                    region.RootKey,
+                    region.FineTuneCents,
+                    region.AttackSeconds,
+                    region.HoldSeconds,
+                    region.DecaySeconds,
+                    region.SustainLevel,
+                    region.ReleaseSeconds,
+                    region.Looping,
+                    region.LoopStartSample,
+                    regionWasDownmixed,
+                    isStereo,
+                    loopPolicy.Looping,
+                    loopPolicy.LoopStartSample);
+                var provisionalRegion = new AuthoredRegion(
                     authoredSample,
                     region.KeyLow,
                     region.KeyHigh,
@@ -633,17 +739,72 @@ public static class BgmMidiSf2Rebuilder
                     isStereo ? GetStereoLeftPan(region.Pan) : Math.Clamp(region.Pan, -1f, 1f),
                     envelope,
                     isStereo,
-                    preferAuthoredEnvelope));
+                    false,
+                    sourceInfo,
+                    string.Empty,
+                    loopPolicy.LoopPolicyReason,
+                    loopPolicy.UsedTemplateLoopPolicy,
+                    loopPolicy.LoopTemplateMatchKind);
+                WdRegionEntry? envelopeTemplateRegion = null;
+                var preferAuthoredEnvelope = false;
+                string envelopePolicyReason;
+                if (adsrMode == MidiSf2AdsrMode.Authored)
+                {
+                    preferAuthoredEnvelope = true;
+                    envelopePolicyReason = "authored:config=authored";
+                }
+                else
+                {
+                    var forceAuthoredEnvelope =
+                        adsrMode != MidiSf2AdsrMode.Template &&
+                        (sf2BankMode == Sf2BankMode.Full ||
+                         regionWasDownmixed ||
+                         (preferFastAttackEnvelopeForPreset && region.AttackSeconds <= FastAttackClampSeconds));
+                    envelopeTemplateRegion = forceAuthoredEnvelope
+                        ? null
+                        : SelectEnvelopeTemplateRegion(
+                            templateRegionsByInstrument,
+                            preset.Program,
+                            provisionalRegion,
+                            authoredRegions.Count);
+                    preferAuthoredEnvelope = envelopeTemplateRegion is null;
+                    if (adsrMode == MidiSf2AdsrMode.Template)
+                    {
+                        envelopePolicyReason = envelopeTemplateRegion is not null
+                            ? $"template:config=template ({DescribeEnvelopeTemplateUsage(envelopeTemplateRegion, provisionalRegion, authoredRegions.Count)})"
+                            : "authored:config=template_no_match";
+                    }
+                    else
+                    {
+                        envelopePolicyReason =
+                            sf2BankMode == Sf2BankMode.Full
+                                ? "authored:sf2_bank_mode=full"
+                                : regionWasDownmixed
+                                    ? "authored:downmixed_pseudo_stereo"
+                                    : (preferFastAttackEnvelopeForPreset && region.AttackSeconds <= FastAttackClampSeconds)
+                                        ? "authored:fast_attack_single_preset"
+                                        : envelopeTemplateRegion is not null
+                                            ? DescribeEnvelopeTemplateUsage(envelopeTemplateRegion, provisionalRegion, authoredRegions.Count)
+                                            : "authored:no_template_match";
+                    }
+                }
+
+                authoredRegions.Add(provisionalRegion with
+                {
+                    PreferAuthoredEnvelope = preferAuthoredEnvelope,
+                    EnvelopePolicyReason = envelopePolicyReason,
+                });
 
                 if (isStereo)
                 {
+                    var stereoIdentityKey = BuildLoopAwareIdentityKey(region.StereoIdentityKey!, loopPolicy.Looping, loopPolicy.LoopStartSample);
                     var stereoSample = GetOrAddAuthoredSample(
                         authoredSamples,
-                        region.StereoIdentityKey!,
+                        stereoIdentityKey,
                         region.StereoSourceSampleName ?? $"{region.SourceSampleName}-R",
                         region.StereoPcm!,
-                        region.Looping,
-                        region.LoopStartSample,
+                        loopPolicy.Looping,
+                        loopPolicy.LoopStartSample,
                         volume,
                         enableShortLoopPitchCompensation);
                     var rightPitch = ApplySamplePitchOffset(region.RootKey, region.FineTuneCents, stereoSample.PitchOffsetSemitones);
@@ -660,7 +821,15 @@ public static class BgmMidiSf2Rebuilder
                         GetStereoRightPan(region.Pan),
                         envelope,
                         true,
-                        preferAuthoredEnvelope));
+                        preferAuthoredEnvelope,
+                        sourceInfo with
+                        {
+                            SourceSampleName = region.StereoSourceSampleName ?? $"{region.SourceSampleName}-R",
+                        },
+                        envelopePolicyReason,
+                        loopPolicy.LoopPolicyReason,
+                        loopPolicy.UsedTemplateLoopPolicy,
+                        loopPolicy.LoopTemplateMatchKind));
                 }
             }
 
@@ -720,6 +889,7 @@ public static class BgmMidiSf2Rebuilder
         log.WriteLine($"MIDI analysis: format {midi.Format}, PPQN {midi.Division}, {midi.Tracks.Count} track(s).");
         log.WriteLine($"SoundFont analysis: {soundFont.Presets.Count} preset(s), {usedPresetRefs.Count} preset(s) referenced by the MIDI, {instruments.Count} instrument(s) authored into the WD.");
         log.WriteLine($"Authored WD plan: {instruments.Count} instrument(s), {instruments.Sum(static instrument => instrument.Regions.Count)} region(s), {authoredSamples.Count} unique sample(s).");
+        log.WriteLine($"Loop policy: source looped {sourceLoopingRegionCount} region(s), source one-shot {sourceOneShotRegionCount}, template forced one-shot {templateForcedOneShotRegionCount} ({exactTemplateOneShotMatchCount} exact-match, {templateInstrumentAllOneShotCount} instrument-wide), source loops preserved {sourceLoopPreservedCount}.");
 
         foreach (var warning in warnings.OrderBy(static warning => warning))
         {
@@ -1734,6 +1904,9 @@ public static class BgmMidiSf2Rebuilder
         var templateRegionsByInstrument = bank.Regions
             .GroupBy(static region => region.InstrumentIndex)
             .ToDictionary(static group => group.Key, static group => group.OrderBy(region => region.RegionIndex).ToList());
+        var templateEnvelopeReuseCount = 0;
+        var authoredEnvelopeCount = 0;
+        var templateEnvelopeMissCount = 0;
         for (var instrumentIndex = 0; instrumentIndex < instrumentCount; instrumentIndex++)
         {
             BinaryHelpers.WriteUInt32LE(output, 0x20 + (instrumentIndex * 4), (uint)currentRegionOffset);
@@ -1746,18 +1919,35 @@ public static class BgmMidiSf2Rebuilder
             {
                 var region = instrument.Regions[regionIndex];
                 var templateRegion = SelectTemplateRegion(templateRegionsByInstrument, bank.Regions, instrument, region, regionIndex);
+                var envelopeTemplateRegion = region.PreferAuthoredEnvelope
+                    ? null
+                    : SelectEnvelopeTemplateRegion(templateRegionsByInstrument, instrument.TemplateInstrumentIndex, region, regionIndex);
                 var regionBytes = new byte[0x20];
                 var templateRegionOffset = templateRegion?.FileOffset ?? bank.Regions[0].FileOffset;
                 Buffer.BlockCopy(bank.OriginalBytes, templateRegionOffset, regionBytes, 0, regionBytes.Length);
 
                 regionBytes[0x00] = region.Stereo ? (byte)0x01 : (byte)0x00;
                 regionBytes[0x01] = (byte)((regionIndex == 0 ? 0x01 : 0x00) | (regionIndex == instrument.Regions.Count - 1 ? 0x02 : 0x00));
+                regionBytes[0x02] = (byte)((regionIndex == 0 || regionIndex == instrument.Regions.Count - 1) ? 0x01 : 0x00);
                 BinaryHelpers.WriteUInt32LE(output, 0x20 + (instrument.Index * 4), (uint)(currentRegionOffset - (regionIndex * 0x20)));
                 BinaryHelpers.WriteUInt32LE(regionBytes, 0x04, (uint)sampleOffsetLookup[region.Sample.IdentityKey]);
                 BinaryHelpers.WriteUInt32LE(regionBytes, 0x08, (uint)WdLayoutHelpers.OffsetLoopStartForStoredChunk(region.Sample.Looping, region.Sample.LoopStartBytes));
-                var adsr = templateRegion is not null && !region.PreferAuthoredEnvelope
-                    ? new AdsrEnvelope(templateRegion.Adsr1, templateRegion.Adsr2)
+                var adsr = envelopeTemplateRegion is not null
+                    ? new AdsrEnvelope(envelopeTemplateRegion.Adsr1, envelopeTemplateRegion.Adsr2)
                     : region.Envelope;
+                if (envelopeTemplateRegion is not null)
+                {
+                    templateEnvelopeReuseCount++;
+                }
+                else
+                {
+                    authoredEnvelopeCount++;
+                    if (!region.PreferAuthoredEnvelope)
+                    {
+                        templateEnvelopeMissCount++;
+                    }
+                }
+
                 BinaryHelpers.WriteUInt16LE(regionBytes, 0x0E, adsr.Adsr1);
                 BinaryHelpers.WriteUInt16LE(regionBytes, 0x10, adsr.Adsr2);
                 EncodeRootNote(region.RootKey + (region.FineTuneCents / 100.0), out var fineTune, out var unityKey);
@@ -1775,7 +1965,13 @@ public static class BgmMidiSf2Rebuilder
         }
 
         sampleBytes.ToArray().CopyTo(output, sampleCollectionOffset);
+        var nonLoopSamplesWithLoopFlags = plan.Samples
+            .Where(static sample => !sample.Looping)
+            .Count(sample => AnalyzeAdpcmFlags(sample.EncodedBytes).LoopFlagBlockCount > 0);
+        var loopingRegionCount = plan.Instruments.Sum(static instrument => instrument.Regions.Count(region => region.Sample.Looping));
         log.WriteLine($"Authored WD from MIDI+SF2: {instrumentCount} instrument(s), {totalRegions} region(s), {sampleBytes.Count} bytes of PSX-ADPCM sample data using KH2-style 16-byte zero lead-ins for each sample chunk.");
+        log.WriteLine($"Loop diagnostics: {loopingRegionCount} looping region(s), {totalRegions - loopingRegionCount} one-shot region(s), {nonLoopSamplesWithLoopFlags} non-loop sample(s) still carry ADPCM loop flags.");
+        log.WriteLine($"ADSR policy: reused template envelopes for {templateEnvelopeReuseCount} region(s), kept authored envelopes for {authoredEnvelopeCount} region(s), template exact-match misses {templateEnvelopeMissCount}.");
         return output;
     }
 
@@ -1883,6 +2079,108 @@ public static class BgmMidiSf2Rebuilder
             .FirstOrDefault();
     }
 
+    private static WdRegionEntry? SelectEnvelopeTemplateRegion(
+        IReadOnlyDictionary<int, List<WdRegionEntry>> templateRegionsByInstrument,
+        int templateInstrumentIndex,
+        AuthoredRegion region,
+        int regionIndex)
+    {
+        if (!templateRegionsByInstrument.TryGetValue(templateInstrumentIndex, out var templateRegions) ||
+            templateRegions.Count == 0)
+        {
+            return null;
+        }
+
+        if (regionIndex >= 0 &&
+            regionIndex < templateRegions.Count &&
+            IsExactEnvelopeTemplateMatch(templateRegions[regionIndex], region))
+        {
+            return templateRegions[regionIndex];
+        }
+
+        var exactTemplate = templateRegions.FirstOrDefault(template => IsExactEnvelopeTemplateMatch(template, region));
+        if (exactTemplate is not null)
+        {
+            return exactTemplate;
+        }
+
+        return templateRegions
+            .OrderByDescending(template => ScoreTemplateRegion(template, region, regionIndex))
+            .FirstOrDefault();
+    }
+
+    private static ResolvedLoopPolicy ResolveLoopPolicy(
+        WdBankFile templateBank,
+        IReadOnlyDictionary<int, List<WdRegionEntry>> templateRegionsByInstrument,
+        int templateInstrumentIndex,
+        int keyLow,
+        int keyHigh,
+        int velocityLow,
+        int velocityHigh,
+        bool stereo,
+        bool sourceLooping,
+        int sourceLoopStartSample)
+    {
+        if (!sourceLooping)
+        {
+            return new ResolvedLoopPolicy(false, 0, "source:one_shot", false, "source_non_loop");
+        }
+
+        if (!templateRegionsByInstrument.TryGetValue(templateInstrumentIndex, out var templateRegions) ||
+            templateRegions.Count == 0)
+        {
+            return new ResolvedLoopPolicy(true, sourceLoopStartSample, "source:sf2_loop_no_template", false, "no_template_instrument");
+        }
+
+        var exactTemplate = templateRegions.FirstOrDefault(template =>
+            template.KeyLow == keyLow &&
+            template.KeyHigh == keyHigh &&
+            template.VelocityLow == velocityLow &&
+            template.VelocityHigh == velocityHigh &&
+            template.Stereo == stereo);
+        if (exactTemplate is not null && !IsTemplateRegionLooping(templateBank, exactTemplate))
+        {
+            return new ResolvedLoopPolicy(false, 0, "template:exact_one_shot_match", true, "exact_one_shot_match");
+        }
+
+        if (templateRegions.All(template => !IsTemplateRegionLooping(templateBank, template)))
+        {
+            return new ResolvedLoopPolicy(false, 0, "template:instrument_all_one_shot", true, "instrument_all_one_shot");
+        }
+
+        return new ResolvedLoopPolicy(true, sourceLoopStartSample, "source:sf2_loop_preserved", false, exactTemplate is null ? "no_exact_template_match" : "exact_looping_match");
+    }
+
+    private static bool IsExactEnvelopeTemplateMatch(WdRegionEntry template, AuthoredRegion region)
+        => template.KeyLow == region.KeyLow &&
+           template.KeyHigh == region.KeyHigh &&
+           template.VelocityLow == region.VelocityLow &&
+           template.VelocityHigh == region.VelocityHigh &&
+           template.Stereo == region.Stereo;
+
+    private static string DescribeEnvelopeTemplateUsage(WdRegionEntry template, AuthoredRegion region, int regionIndex)
+    {
+        if (IsExactEnvelopeTemplateMatch(template, region))
+        {
+            return "template:exact_structural_match";
+        }
+
+        return region.SourceInfo.WasDownmixedPseudoStereo
+            ? "template:best_scored_region_after_downmix"
+            : $"template:best_scored_region(score={ScoreTemplateRegion(template, region, regionIndex)})";
+    }
+
+    private static bool IsTemplateRegionLooping(WdBankFile bank, WdRegionEntry region)
+    {
+        var playbackFlag = region.FileOffset + 0x18 < bank.OriginalBytes.Length
+            ? bank.OriginalBytes[region.FileOffset + 0x18]
+            : (byte)0x00;
+        return region.LoopStartBytes > 0 || (playbackFlag & 0x02) != 0;
+    }
+
+    private static string BuildLoopAwareIdentityKey(string baseIdentityKey, bool looping, int loopStartSample)
+        => $"{baseIdentityKey}|loop={(looping ? 1 : 0)}|ls={(looping ? Math.Max(0, loopStartSample) : 0)}";
+
     private static int ScoreTemplateRegion(WdRegionEntry template, AuthoredRegion region, int regionIndex)
     {
         var score = 0;
@@ -1915,7 +2213,180 @@ public static class BgmMidiSf2Rebuilder
         }
 
         score -= Math.Abs(template.RegionIndex - regionIndex) * 16;
+        score -= Math.Abs(template.UnityKey - region.RootKey) * 24;
+        score -= Math.Abs(template.FineTuneCents - region.FineTuneCents) * 8;
+        score -= Math.Abs(template.Volume - region.Volume) < 0.0001f ? 0 : (int)Math.Round(Math.Abs(template.Volume - region.Volume) * 400.0, MidpointRounding.AwayFromZero);
+        score -= Math.Abs(template.Pan - region.Pan) < 0.0001f ? 0 : (int)Math.Round(Math.Abs(template.Pan - region.Pan) * 300.0, MidpointRounding.AwayFromZero);
+        score -= Math.Abs(template.Adsr1 - region.Envelope.Adsr1) / 8;
+        score -= Math.Abs(template.Adsr2 - region.Envelope.Adsr2) / 8;
         return score;
+    }
+
+    private static List<MidiSf2InstrumentManifest> BuildInstrumentManifests(string originalWdPath, ConversionPlan plan)
+    {
+        if (plan.Instruments.Count == 0 || !File.Exists(originalWdPath))
+        {
+            return [];
+        }
+
+        var bank = WdBankFile.Load(originalWdPath);
+        if (bank.Regions.Count == 0)
+        {
+            return [];
+        }
+
+        var templateRegionsByInstrument = bank.Regions
+            .GroupBy(static region => region.InstrumentIndex)
+            .ToDictionary(static group => group.Key, static group => group.OrderBy(region => region.RegionIndex).ToList());
+
+        return plan.Instruments
+            .OrderBy(static instrument => instrument.Index)
+            .Select(instrument =>
+            {
+                var regionManifests = instrument.Regions
+                    .Select((region, regionIndex) =>
+                    {
+                        var templateRegion = SelectTemplateRegion(templateRegionsByInstrument, bank.Regions, instrument, region, regionIndex);
+                        var envelopeTemplateRegion = region.PreferAuthoredEnvelope
+                            ? null
+                            : SelectEnvelopeTemplateRegion(templateRegionsByInstrument, instrument.TemplateInstrumentIndex, region, regionIndex);
+                        var loopPolicy = ResolveLoopPolicy(
+                            bank,
+                            templateRegionsByInstrument,
+                            instrument.TemplateInstrumentIndex,
+                            region.KeyLow,
+                            region.KeyHigh,
+                            region.VelocityLow,
+                            region.VelocityHigh,
+                            region.Stereo,
+                            region.SourceInfo.SourceLooping,
+                            region.SourceInfo.SourceLoopStartSample);
+                        var usedTemplateEnvelope = envelopeTemplateRegion is not null;
+                        var finalEnvelope = usedTemplateEnvelope
+                            ? new AdsrEnvelope(envelopeTemplateRegion!.Adsr1, envelopeTemplateRegion.Adsr2)
+                            : region.Envelope;
+                        var envelopeMatchKind = region.PreferAuthoredEnvelope
+                            ? "authored_forced"
+                            : usedTemplateEnvelope
+                                ? IsExactEnvelopeTemplateMatch(envelopeTemplateRegion!, region)
+                                    ? "exact_structural_match"
+                                    : "best_scored_region"
+                                : "no_template_match";
+                        var adpcmFlags = AnalyzeAdpcmFlags(region.Sample.EncodedBytes);
+                        var sourceManifest = new MidiSf2AuthoredRegionSourceManifest(
+                            region.SourceInfo.SourceSampleName,
+                            region.SourceInfo.SourceRootKey,
+                            region.SourceInfo.SourceFineTuneCents,
+                            region.SourceInfo.AttackSeconds,
+                            region.SourceInfo.HoldSeconds,
+                            region.SourceInfo.DecaySeconds,
+                            region.SourceInfo.SustainLevel,
+                            region.SourceInfo.ReleaseSeconds,
+                            region.SourceInfo.SourceLooping,
+                            region.SourceInfo.SourceLoopStartSample,
+                            region.SourceInfo.WasDownmixedPseudoStereo,
+                            region.SourceInfo.SourceStereoPair,
+                            region.SourceInfo.EffectiveLooping,
+                            region.SourceInfo.EffectiveLoopStartSample);
+                        var templateRegionManifest = templateRegion is null
+                            ? null
+                            : CreateTemplateRegionManifest(bank, templateRegion);
+                        var envelopeTemplateManifest = envelopeTemplateRegion is null
+                            ? null
+                            : CreateTemplateRegionManifest(bank, envelopeTemplateRegion);
+
+                        return new MidiSf2RegionManifest(
+                            regionIndex,
+                            region.Sample.IdentityKey,
+                            region.Sample.SourceSampleName,
+                            region.KeyLow,
+                            region.KeyHigh,
+                            region.VelocityLow,
+                            region.VelocityHigh,
+                            region.RootKey,
+                            region.FineTuneCents,
+                            region.Volume,
+                            region.Pan,
+                            region.Stereo,
+                            region.Sample.Looping,
+                            region.Sample.LoopStartBytes,
+                            region.LoopPolicyReason,
+                            region.UsedTemplateLoopPolicy,
+                            region.LoopTemplateMatchKind,
+                            adpcmFlags,
+                            region.EnvelopePolicyReason,
+                            region.PreferAuthoredEnvelope,
+                            usedTemplateEnvelope,
+                            envelopeMatchKind,
+                            new MidiSf2EnvelopeManifest(region.Envelope.Adsr1, region.Envelope.Adsr2),
+                            new MidiSf2EnvelopeManifest(finalEnvelope.Adsr1, finalEnvelope.Adsr2),
+                            sourceManifest,
+                            templateRegionManifest,
+                            envelopeTemplateManifest,
+                            loopPolicy.UsedTemplateLoopPolicy ? templateRegionManifest : null);
+                    })
+                    .ToList();
+
+                return new MidiSf2InstrumentManifest(
+                    instrument.Index,
+                    instrument.PresetName,
+                    instrument.TemplateInstrumentIndex,
+                    regionManifests);
+            })
+            .ToList();
+    }
+
+    private static MidiSf2TemplateRegionManifest CreateTemplateRegionManifest(WdBankFile bank, WdRegionEntry region)
+        => new(
+            region.InstrumentIndex,
+            region.RegionIndex,
+            region.FileOffset,
+            region.KeyLow,
+            region.KeyHigh,
+            region.VelocityLow,
+            region.VelocityHigh,
+            region.Stereo,
+            region.UnityKey,
+            region.FineTuneCents,
+            region.Volume,
+            region.Pan,
+            IsTemplateRegionLooping(bank, region),
+            region.LoopStartBytes,
+            new MidiSf2EnvelopeManifest(region.Adsr1, region.Adsr2));
+
+    private static MidiSf2AdpcmFlagManifest AnalyzeAdpcmFlags(byte[] encodedBytes)
+    {
+        if (encodedBytes.Length == 0)
+        {
+            return new MidiSf2AdpcmFlagManifest(0, 0, 0, 0, 0);
+        }
+
+        var blockCount = encodedBytes.Length / 0x10;
+        var loopFlagBlockCount = 0;
+        var endFlagBlockCount = 0;
+        byte firstBlockFlag = 0;
+        byte lastBlockFlag = 0;
+        for (var blockIndex = 0; blockIndex < blockCount; blockIndex++)
+        {
+            var flag = encodedBytes[(blockIndex * 0x10) + 1];
+            if (blockIndex == 0)
+            {
+                firstBlockFlag = flag;
+            }
+
+            lastBlockFlag = flag;
+            if ((flag & 0x02) != 0)
+            {
+                loopFlagBlockCount++;
+            }
+
+            if ((flag & 0x01) != 0)
+            {
+                endFlagBlockCount++;
+            }
+        }
+
+        return new MidiSf2AdpcmFlagManifest(blockCount, loopFlagBlockCount, endFlagBlockCount, firstBlockFlag, lastBlockFlag);
     }
 
     private static int RangeOverlapScore(int leftLow, int leftHigh, int rightLow, int rightHigh)
@@ -2821,59 +3292,25 @@ public static class BgmMidiSf2Rebuilder
 
     private static AdsrEnvelope EncodeAdsr(SoundFontRegion region)
     {
-        var sustainNibble = EncodeSustainNibble(region.SustainLevel);
         var attackSeconds = region.AttackSeconds <= FastAttackClampSeconds
             ? 0.0
             : region.AttackSeconds;
-        var attack = SelectAttackProfile(SecondsToSamples(attackSeconds));
-        var decay = SelectDecayProfile(sustainNibble, SecondsToSamples(region.HoldSeconds + region.DecaySeconds));
-        var release = SelectReleaseProfile(sustainNibble, SecondsToSamples(region.ReleaseSeconds));
+        var attack = SelectAttackProfile(attackSeconds);
+        var decay = SelectDecayProfile(region.SustainLevel, region.HoldSeconds + region.DecaySeconds);
+        var release = SelectReleaseProfile(region.ReleaseSeconds);
 
-        var adsr1 = (ushort)(
-            ((attack.Exponential ? 1 : 0) << 15) |
-            (attack.Shift << 10) |
-            (attack.Step << 8) |
-            (decay.Shift << 4) |
-            sustainNibble);
-
-        var adsr2 = (ushort)(
-            (1 << 14) |
-            (SustainHoldShift << 8) |
-            (SustainHoldStep << 6) |
-            ((release.Exponential ? 1 : 0) << 5) |
-            release.Shift);
-
-        return new AdsrEnvelope(adsr1, adsr2);
+        return new AdsrEnvelope(
+            ComposePsxAdsr1(attack.Exponential, attack.Rate, decay.Rate, decay.SustainNibble),
+            ComposePsxAdsr2(sustainExponential: false, sustainDecreasing: true, sustainRate: 0x7F, release.Exponential, release.Rate));
     }
 
-    private static int EncodeSustainNibble(float sustainLevel)
-    {
-        var clamped = Math.Clamp(sustainLevel, 0f, 1f);
-        var targetLevel = (int)Math.Round(clamped * SpuMaxLevel, MidpointRounding.AwayFromZero);
-        var sustainNibble = (int)Math.Round((targetLevel / 2048.0) - 1.0, MidpointRounding.AwayFromZero);
-        return Math.Clamp(sustainNibble, 0, 15);
-    }
-
-    private static int SecondsToSamples(double seconds)
-    {
-        if (!double.IsFinite(seconds) || seconds <= 0)
-        {
-            return 0;
-        }
-
-        return (int)Math.Clamp(
-            Math.Round(seconds * SpuSampleRate, MidpointRounding.AwayFromZero),
-            0,
-            MaxEnvelopeSearchSamples);
-    }
-
-    private static AttackAdsrProfile SelectAttackProfile(int targetSamples)
+    private static AttackAdsrProfile SelectAttackProfile(double targetSeconds)
     {
         AttackAdsrProfile? best = null;
         var bestScore = double.MaxValue;
         foreach (var profile in AttackProfiles)
         {
-            var score = ScoreDuration(profile.DurationSamples, targetSamples);
+            var score = ScoreDuration(profile.DurationSeconds, targetSeconds);
             if (score < bestScore)
             {
                 best = profile;
@@ -2884,18 +3321,15 @@ public static class BgmMidiSf2Rebuilder
         return best ?? AttackProfiles[0];
     }
 
-    private static DecayAdsrProfile SelectDecayProfile(int sustainNibble, int targetSamples)
+    private static DecayAdsrProfile SelectDecayProfile(float targetSustainLevel, double targetSeconds)
     {
         DecayAdsrProfile? best = null;
         var bestScore = double.MaxValue;
+        var clampedSustainLevel = Math.Clamp(targetSustainLevel, 0f, 1f);
         foreach (var profile in DecayProfiles)
         {
-            if (profile.SustainNibble != sustainNibble)
-            {
-                continue;
-            }
-
-            var score = ScoreDuration(profile.DurationSamples, targetSamples);
+            var score = ScoreDuration(profile.DurationSeconds, targetSeconds) +
+                        ScoreSustainLevel(profile.SustainLevel, clampedSustainLevel);
             if (score < bestScore)
             {
                 best = profile;
@@ -2903,21 +3337,16 @@ public static class BgmMidiSf2Rebuilder
             }
         }
 
-        return best ?? DecayProfiles.First(profile => profile.SustainNibble == sustainNibble);
+        return best ?? DecayProfiles[0];
     }
 
-    private static ReleaseAdsrProfile SelectReleaseProfile(int sustainNibble, int targetSamples)
+    private static ReleaseAdsrProfile SelectReleaseProfile(double targetSeconds)
     {
         ReleaseAdsrProfile? best = null;
         var bestScore = double.MaxValue;
         foreach (var profile in ReleaseProfiles)
         {
-            if (profile.SustainNibble != sustainNibble)
-            {
-                continue;
-            }
-
-            var score = ScoreDuration(profile.DurationSamples, targetSamples);
+            var score = ScoreDuration(profile.DurationSeconds, targetSeconds);
             if (score < bestScore)
             {
                 best = profile;
@@ -2925,31 +3354,28 @@ public static class BgmMidiSf2Rebuilder
             }
         }
 
-        return best ?? ReleaseProfiles.First(profile => profile.SustainNibble == sustainNibble);
+        return best ?? ReleaseProfiles[0];
     }
 
-    private static double ScoreDuration(int actualSamples, int targetSamples)
+    private static double ScoreDuration(double actualSeconds, double targetSeconds)
     {
-        var actual = actualSamples + 1.0;
-        var target = targetSamples + 1.0;
+        var actual = Math.Max(SanitizeEnvelopeSeconds(actualSeconds), 1.0 / Ps2AdsrSampleRate);
+        var target = Math.Max(SanitizeEnvelopeSeconds(targetSeconds), 1.0 / Ps2AdsrSampleRate);
         return Math.Abs(Math.Log(actual / target));
+    }
+
+    private static double ScoreSustainLevel(double actualLevel, double targetLevel)
+    {
+        return Math.Abs(ConvertAmplitudeToDb(actualLevel) - ConvertAmplitudeToDb(targetLevel)) / 12.0;
     }
 
     private static IReadOnlyList<AttackAdsrProfile> BuildAttackProfiles()
     {
         var profiles = new List<AttackAdsrProfile>();
-        for (var shift = 0; shift <= 31; shift++)
+        for (var rate = 0; rate <= 0x7F; rate++)
         {
-            for (var step = 0; step <= 3; step++)
-            {
-                if (shift == SustainHoldShift && step == SustainHoldStep)
-                {
-                    continue;
-                }
-
-                profiles.Add(new AttackAdsrProfile(false, shift, step, SimulateAttackDuration(false, shift, step)));
-                profiles.Add(new AttackAdsrProfile(true, shift, step, SimulateAttackDuration(true, shift, step)));
-            }
+            profiles.Add(new AttackAdsrProfile(false, rate, DecodePsxAttackSeconds(false, rate)));
+            profiles.Add(new AttackAdsrProfile(true, rate, DecodePsxAttackSeconds(true, rate)));
         }
 
         return profiles;
@@ -2958,12 +3384,12 @@ public static class BgmMidiSf2Rebuilder
     private static IReadOnlyList<DecayAdsrProfile> BuildDecayProfiles()
     {
         var profiles = new List<DecayAdsrProfile>();
-        for (var sustainNibble = 0; sustainNibble <= 15; sustainNibble++)
+        for (var sustainNibble = 0; sustainNibble <= 0x0F; sustainNibble++)
         {
-            var sustainLevel = DecodeSustainNibble(sustainNibble);
-            for (var shift = 0; shift <= 15; shift++)
+            for (var rate = 0; rate <= 0x0F; rate++)
             {
-                profiles.Add(new DecayAdsrProfile(sustainNibble, shift, SimulateDecayDuration(shift, sustainLevel)));
+                var decoded = DecodePsxDecayProfile(rate, sustainNibble);
+                profiles.Add(new DecayAdsrProfile(sustainNibble, rate, decoded.SustainLevel, decoded.DurationSeconds));
             }
         }
 
@@ -2973,106 +3399,272 @@ public static class BgmMidiSf2Rebuilder
     private static IReadOnlyList<ReleaseAdsrProfile> BuildReleaseProfiles()
     {
         var profiles = new List<ReleaseAdsrProfile>();
-        for (var sustainNibble = 0; sustainNibble <= 15; sustainNibble++)
+        for (var rate = 0; rate <= 0x1F; rate++)
         {
-            var startLevel = DecodeSustainNibble(sustainNibble);
-            for (var shift = 0; shift <= 31; shift++)
-            {
-                profiles.Add(new ReleaseAdsrProfile(sustainNibble, false, shift, SimulateReleaseDuration(false, shift, startLevel)));
-                profiles.Add(new ReleaseAdsrProfile(sustainNibble, true, shift, SimulateReleaseDuration(true, shift, startLevel)));
-            }
+            profiles.Add(new ReleaseAdsrProfile(false, rate, DecodePsxReleaseSeconds(false, rate)));
+            profiles.Add(new ReleaseAdsrProfile(true, rate, DecodePsxReleaseSeconds(true, rate)));
         }
 
         return profiles;
     }
 
-    private static int DecodeSustainNibble(int sustainNibble)
+    private static uint[] BuildPsxRateTable()
     {
-        return (Math.Clamp(sustainNibble, 0, 15) + 1) * 0x800;
-    }
-
-    private static int SimulateAttackDuration(bool exponential, int shift, int step)
-    {
-        return SimulateEnvelopePhase(
-            0,
-            level => level >= SpuMaxLevel,
-            level => CalculateAdsrStep(exponential, false, shift, step, level),
-            level => CalculateCounterIncrement(exponential, false, shift, step, level));
-    }
-
-    private static int SimulateDecayDuration(int shift, int sustainLevel)
-    {
-        return SimulateEnvelopePhase(
-            SpuMaxLevel,
-            level => level <= sustainLevel,
-            level => CalculateAdsrStep(true, true, shift, 0, level),
-            level => CalculateCounterIncrement(true, true, shift, 0, level));
-    }
-
-    private static int SimulateReleaseDuration(bool exponential, int shift, int startLevel)
-    {
-        return SimulateEnvelopePhase(
-            startLevel,
-            level => level <= 0,
-            level => CalculateAdsrStep(exponential, true, shift, 0, level),
-            level => CalculateCounterIncrement(exponential, true, shift, 0, level));
-    }
-
-    private static int SimulateEnvelopePhase(
-        int initialLevel,
-        Func<int, bool> complete,
-        Func<int, int> stepSelector,
-        Func<int, int> incrementSelector)
-    {
-        var level = initialLevel;
-        var counter = 0;
-        var samples = 0;
-        while (samples < MaxEnvelopeSearchSamples && !complete(level))
+        var table = new uint[160];
+        uint rate = 3;
+        uint step = 1;
+        uint stepCountdown = 0;
+        for (var index = 32; index < table.Length; index++)
         {
-            counter = (counter + incrementSelector(level)) & 0xFFFF;
-            if ((counter & 0x8000) != 0)
+            if (rate < 0x3FFFFFFF)
             {
-                level += stepSelector(level);
-                level = Math.Clamp(level, 0, SpuMaxLevel);
+                rate += step;
+                stepCountdown++;
+                if (stepCountdown == 5)
+                {
+                    stepCountdown = 1;
+                    step *= 2;
+                }
             }
 
-            samples++;
+            if (rate > 0x3FFFFFFF)
+            {
+                rate = 0x3FFFFFFF;
+            }
+
+            table[index] = rate;
         }
 
-        return samples;
+        return table;
     }
 
-    private static int CalculateAdsrStep(bool exponential, bool decreasing, int shift, int step, int level)
+    private static double DecodePsxAttackSeconds(bool exponential, int attackRate)
     {
-        var adsrStep = 7 - step;
-        if (decreasing)
+        var rate = Math.Clamp(attackRate, 0, 0x7F);
+        if ((rate ^ 0x7F) < 0x10)
         {
-            adsrStep = ~adsrStep;
+            rate = 0;
         }
 
-        adsrStep <<= Math.Max(0, 11 - shift);
-
-        if (exponential && !decreasing && level > 0x6000)
+        var firstPhaseRate = GetPsxRate(RoundToZero((rate ^ 0x7F) - 0x10) + 32);
+        if (firstPhaseRate == 0)
         {
-            adsrStep >>= 2;
-        }
-        else if (exponential && decreasing)
-        {
-            adsrStep = (adsrStep * Math.Max(level, 0)) / 0x8000;
+            return 0.0;
         }
 
-        return adsrStep;
+        double samples;
+        if (!exponential)
+        {
+            samples = Math.Ceiling(PsxEnvelopeMaxLevel / (double)firstPhaseRate);
+        }
+        else
+        {
+            samples = 0x60000000 / (double)firstPhaseRate;
+            var remainder = 0x60000000 % firstPhaseRate;
+            var secondPhaseRate = GetPsxRate(RoundToZero((rate ^ 0x7F) - 0x18) + 32);
+            if (secondPhaseRate == 0)
+            {
+                return samples / Ps2AdsrSampleRate;
+            }
+
+            samples += Math.Ceiling(Math.Max(0.0, 0x1FFFFFFF - remainder) / secondPhaseRate);
+        }
+
+        return samples / Ps2AdsrSampleRate;
     }
 
-    private static int CalculateCounterIncrement(bool exponential, bool decreasing, int shift, int step, int level)
+    private static DecodedPsxDecayProfile DecodePsxDecayProfile(int decayRate, int sustainNibble)
     {
-        var increment = 0x8000 >> Math.Max(0, shift - 11);
-        if (exponential && !decreasing && level > 0x6000 && shift >= 11)
+        var rate = Math.Clamp(decayRate, 0, 0x0F);
+        var sustain = Math.Clamp(sustainNibble, 0, 0x0F);
+        if ((4 * (rate ^ 0x1F)) < 0x18)
         {
-            increment >>= 2;
+            rate = 0;
         }
 
-        return Math.Max(increment, 1);
+        long envelopeLevel = PsxEnvelopeMaxLevel;
+        var sampleCount = 0L;
+        var sustainThreshold = sustain == 0
+            ? 0x07FFFFFFL
+            : ((long)sustain << 27) | 0x07FFFFFFL;
+        uint decodedSustainLevel = 0;
+        var sustainFound = false;
+
+        while (envelopeLevel > 0)
+        {
+            var segment = (int)((envelopeLevel >> 28) & 0x7);
+            var decrement = GetPsxRate(RoundToZero((4 * (rate ^ 0x1F)) - 0x18 + GetPsxSegmentOffset(segment)) + 32);
+            if (decrement == 0)
+            {
+                break;
+            }
+
+            var stepsToSegmentBoundary = segment == 0
+                ? CeilDivPositive(envelopeLevel, decrement)
+                : CeilDivPositive(envelopeLevel - ((((long)segment) << 28) - 1), decrement);
+            var steps = Math.Max(stepsToSegmentBoundary, 1L);
+            if (!sustainFound && envelopeLevel > sustainThreshold)
+            {
+                steps = Math.Min(steps, Math.Max(CeilDivPositive(envelopeLevel - sustainThreshold, decrement), 1L));
+            }
+
+            envelopeLevel = Math.Max(0, envelopeLevel - (decrement * steps));
+            sampleCount += steps;
+
+            if (!sustainFound && (((envelopeLevel >> 27) & 0xF) <= sustain))
+            {
+                decodedSustainLevel = (uint)envelopeLevel;
+                sustainFound = true;
+            }
+        }
+
+        if (sustain == 0)
+        {
+            decodedSustainLevel = 0x07FFFFFF;
+        }
+        else if (!sustainFound)
+        {
+            decodedSustainLevel = 0;
+        }
+
+        return new DecodedPsxDecayProfile(
+            sampleCount / (double)Ps2AdsrSampleRate,
+            decodedSustainLevel / (double)PsxEnvelopeMaxLevel);
+    }
+
+    private static double DecodePsxReleaseSeconds(bool exponential, int releaseRate)
+    {
+        var rate = Math.Clamp(releaseRate, 0, 0x1F);
+        double samples;
+        if (!exponential)
+        {
+            var decrement = GetPsxRate(RoundToZero((4 * (rate ^ 0x1F)) - 0x0C) + 32);
+            samples = decrement == 0
+                ? 0.0
+                : Math.Ceiling(PsxEnvelopeMaxLevel / (double)decrement);
+        }
+        else
+        {
+            if (((rate ^ 0x1F) * 4) < 0x18)
+            {
+                rate = 0;
+            }
+
+            long envelopeLevel = PsxEnvelopeMaxLevel;
+            var sampleCount = 0L;
+            while (envelopeLevel > 0)
+            {
+                var segment = (int)((envelopeLevel >> 28) & 0x7);
+                var decrement = GetPsxRate(RoundToZero((4 * (rate ^ 0x1F)) - 0x18 + GetPsxSegmentOffset(segment)) + 32);
+                if (decrement == 0)
+                {
+                    break;
+                }
+
+                var steps = segment == 0
+                    ? CeilDivPositive(envelopeLevel, decrement)
+                    : CeilDivPositive(envelopeLevel - ((((long)segment) << 28) - 1), decrement);
+                steps = Math.Max(steps, 1L);
+                envelopeLevel = Math.Max(0, envelopeLevel - (decrement * steps));
+                sampleCount += steps;
+            }
+
+            samples = sampleCount;
+        }
+
+        return LinearAmpDecayTimeToLinDbDecayTime(samples / Ps2AdsrSampleRate);
+    }
+
+    private static int GetPsxSegmentOffset(int segment)
+    {
+        return segment switch
+        {
+            0 => 0,
+            1 => 4,
+            2 => 6,
+            3 => 8,
+            4 => 9,
+            5 => 10,
+            6 => 11,
+            _ => 12,
+        };
+    }
+
+    private static long CeilDivPositive(long numerator, uint denominator)
+    {
+        if (numerator <= 0)
+        {
+            return 0;
+        }
+
+        return (numerator + denominator - 1) / denominator;
+    }
+
+    private static uint GetPsxRate(int index)
+    {
+        return index < 0 || index >= PsxRateTable.Length
+            ? 0
+            : PsxRateTable[index];
+    }
+
+    private static int RoundToZero(int value)
+    {
+        return value < 0 ? 0 : value;
+    }
+
+    private static ushort ComposePsxAdsr1(bool attackExponential, int attackRate, int decayRate, int sustainNibble)
+    {
+        return (ushort)(
+            ((attackExponential ? 1 : 0) << 15) |
+            ((Math.Clamp(attackRate, 0, 0x7F) & 0x7F) << 8) |
+            ((Math.Clamp(decayRate, 0, 0x0F) & 0x0F) << 4) |
+            (Math.Clamp(sustainNibble, 0, 0x0F) & 0x0F));
+    }
+
+    private static ushort ComposePsxAdsr2(bool sustainExponential, bool sustainDecreasing, int sustainRate, bool releaseExponential, int releaseRate)
+    {
+        return (ushort)(
+            ((sustainExponential ? 1 : 0) << 15) |
+            ((sustainDecreasing ? 1 : 0) << 14) |
+            ((Math.Clamp(sustainRate, 0, 0x7F) & 0x7F) << 6) |
+            ((releaseExponential ? 1 : 0) << 5) |
+            (Math.Clamp(releaseRate, 0, 0x1F) & 0x1F));
+    }
+
+    private static double LinearAmpDecayTimeToLinDbDecayTime(double secondsToFullAtten)
+    {
+        if (secondsToFullAtten <= 0.0 || !double.IsFinite(secondsToFullAtten))
+        {
+            return 0.0;
+        }
+
+        const double leastSquaresDb = 70.0;
+        const double initialSlopeDb = 140.0;
+        const double ln10 = 2.302585092994046;
+        const double kneeSeconds = 0.12;
+        const double kneePower = 2.0;
+        var shortFactor = initialSlopeDb / (20.0 / ln10);
+        var longFactor = leastSquaresDb * ln10 / 45.0;
+        var normalizedTime = secondsToFullAtten / kneeSeconds;
+        var blend = 1.0 / (1.0 + Math.Pow(normalizedTime, kneePower));
+        return secondsToFullAtten * ((blend * shortFactor) + ((1.0 - blend) * longFactor));
+    }
+
+    private static double ConvertAmplitudeToDb(double amplitude)
+    {
+        if (!double.IsFinite(amplitude) || amplitude <= 0.0)
+        {
+            return 100.0;
+        }
+
+        return Math.Min(-20.0 * Math.Log10(amplitude), 100.0);
+    }
+
+    private static double SanitizeEnvelopeSeconds(double seconds)
+    {
+        return !double.IsFinite(seconds) || seconds <= 0.0
+            ? 0.0
+            : seconds;
     }
 
     private static int Align16(int value)
@@ -3126,7 +3718,28 @@ internal sealed record AuthoredRegion(
     float Pan,
     AdsrEnvelope Envelope,
     bool Stereo,
-    bool PreferAuthoredEnvelope);
+    bool PreferAuthoredEnvelope,
+    AuthoredRegionSourceInfo SourceInfo,
+    string EnvelopePolicyReason,
+    string LoopPolicyReason,
+    bool UsedTemplateLoopPolicy,
+    string LoopTemplateMatchKind);
+
+internal sealed record AuthoredRegionSourceInfo(
+    string SourceSampleName,
+    int SourceRootKey,
+    int SourceFineTuneCents,
+    double AttackSeconds,
+    double HoldSeconds,
+    double DecaySeconds,
+    float SustainLevel,
+    double ReleaseSeconds,
+    bool SourceLooping,
+    int SourceLoopStartSample,
+    bool WasDownmixedPseudoStereo,
+    bool SourceStereoPair,
+    bool EffectiveLooping,
+    int EffectiveLoopStartSample);
 
 internal sealed class ActiveChannelNote
 {
@@ -3154,11 +3767,13 @@ internal sealed record AuthoredSample(
 
 internal sealed record AdsrEnvelope(ushort Adsr1, ushort Adsr2);
 
-internal sealed record AttackAdsrProfile(bool Exponential, int Shift, int Step, int DurationSamples);
+internal sealed record AttackAdsrProfile(bool Exponential, int Rate, double DurationSeconds);
 
-internal sealed record DecayAdsrProfile(int SustainNibble, int Shift, int DurationSamples);
+internal sealed record DecayAdsrProfile(int SustainNibble, int Rate, double SustainLevel, double DurationSeconds);
 
-internal sealed record ReleaseAdsrProfile(int SustainNibble, bool Exponential, int Shift, int DurationSamples);
+internal sealed record ReleaseAdsrProfile(bool Exponential, int Rate, double DurationSeconds);
+
+internal sealed record DecodedPsxDecayProfile(double DurationSeconds, double SustainLevel);
 
 internal sealed record PresetRef(int Bank, int Program);
 
@@ -3191,17 +3806,103 @@ internal sealed record MidiSf2ReplacementManifest(
     string OutputWd,
     List<MidiSf2TrackManifest> Tracks,
     List<MidiSf2ProgramManifest> Programs,
+    List<MidiSf2InstrumentManifest> Instruments,
     IReadOnlyList<string> Warnings);
 
 internal sealed record MidiSf2TrackManifest(int Channel, string Name, int EventCount);
 
 internal sealed record MidiSf2ProgramManifest(int Bank, int Program, byte InstrumentIndex, string PresetName, int RegionCount);
 
+internal sealed record MidiSf2InstrumentManifest(
+    int InstrumentIndex,
+    string PresetName,
+    int TemplateInstrumentIndex,
+    List<MidiSf2RegionManifest> Regions);
+
+internal sealed record MidiSf2RegionManifest(
+    int RegionIndex,
+    string SampleIdentityKey,
+    string SourceSampleName,
+    int KeyLow,
+    int KeyHigh,
+    int VelocityLow,
+    int VelocityHigh,
+    int RootKey,
+    int FineTuneCents,
+    float Volume,
+    float Pan,
+    bool Stereo,
+    bool Looping,
+    int LoopStartBytes,
+    string LoopPolicyReason,
+    bool UsedTemplateLoopPolicy,
+    string LoopTemplateMatchKind,
+    MidiSf2AdpcmFlagManifest AdpcmFlags,
+    string EnvelopePolicyReason,
+    bool PreferAuthoredEnvelope,
+    bool UsedTemplateEnvelope,
+    string EnvelopeTemplateMatchKind,
+    MidiSf2EnvelopeManifest AuthoredEnvelope,
+    MidiSf2EnvelopeManifest FinalEnvelope,
+    MidiSf2AuthoredRegionSourceManifest Source,
+    MidiSf2TemplateRegionManifest? TemplateRegion,
+    MidiSf2TemplateRegionManifest? EnvelopeTemplateRegion,
+    MidiSf2TemplateRegionManifest? LoopTemplateRegion);
+
+internal sealed record MidiSf2AdpcmFlagManifest(
+    int BlockCount,
+    int LoopFlagBlockCount,
+    int EndFlagBlockCount,
+    byte FirstBlockFlag,
+    byte LastBlockFlag);
+
+internal sealed record MidiSf2EnvelopeManifest(ushort Adsr1, ushort Adsr2);
+
+internal sealed record MidiSf2AuthoredRegionSourceManifest(
+    string SourceSampleName,
+    int SourceRootKey,
+    int SourceFineTuneCents,
+    double AttackSeconds,
+    double HoldSeconds,
+    double DecaySeconds,
+    float SustainLevel,
+    double ReleaseSeconds,
+    bool SourceLooping,
+    int SourceLoopStartSample,
+    bool WasDownmixedPseudoStereo,
+    bool SourceStereoPair,
+    bool EffectiveLooping,
+    int EffectiveLoopStartSample);
+
+internal sealed record MidiSf2TemplateRegionManifest(
+    int InstrumentIndex,
+    int RegionIndex,
+    int FileOffset,
+    int KeyLow,
+    int KeyHigh,
+    int VelocityLow,
+    int VelocityHigh,
+    bool Stereo,
+    int UnityKey,
+    int FineTuneCents,
+    float Volume,
+    float Pan,
+    bool Looping,
+    int LoopStartBytes,
+    MidiSf2EnvelopeManifest Envelope);
+
 internal sealed record GeneratedTrack(int Channel, string Name, byte[] Bytes);
 
 internal sealed record PreparedLoopSample(short[] Pcm, bool Looping, int LoopStartSample, double PitchOffsetSemitones);
 
 internal sealed record PitchTarget(byte Program, int Key);
+
+internal sealed record ResolvedLoopPolicy(
+    bool Looping,
+    int LoopStartSample,
+    string LoopPolicyReason,
+    bool UsedTemplateLoopPolicy,
+    string LoopTemplateMatchKind);
 
 internal enum MidiLoopMarkerKind
 {
@@ -3239,7 +3940,8 @@ internal sealed record MidiSf2Config(
     double Sf2PreLowPassHz,
     bool Sf2AutoLowPass,
     bool MidiPitchBendWorkaround,
-    MidiProgramCompactionMode MidiProgramCompaction);
+    MidiProgramCompactionMode MidiProgramCompaction,
+    MidiSf2AdsrMode AdsrMode);
 internal enum Sf2BankMode
 {
     Used,
@@ -3251,4 +3953,11 @@ internal enum MidiProgramCompactionMode
     Auto,
     Compact,
     Preserve,
+}
+
+internal enum MidiSf2AdsrMode
+{
+    Auto,
+    Authored,
+    Template,
 }

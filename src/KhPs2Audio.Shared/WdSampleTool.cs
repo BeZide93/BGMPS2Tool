@@ -664,7 +664,7 @@ internal static class PsxAdpcmEncoder
 
             var outputOffset = blockIndex * 0x10;
             output[outputOffset] = (byte)((block.Filter << 4) | block.Shift);
-            var flag = 0x2;
+            var flag = looping ? 0x2 : 0x0;
             if (blockIndex == blockCount - 1)
             {
                 flag |= 0x1;

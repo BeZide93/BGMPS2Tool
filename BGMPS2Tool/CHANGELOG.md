@@ -1,5 +1,31 @@
 # CHANGELOG
 
+## v0.6.69 - 2026-04-07
+
+### Fixed
+
+- restored the simpler `v0.6.67`-style normalized loop-end trimming for MIDI/SF2 imports after the newer seam-search path caused audible regressions on `152`-style material
+- restored the older short-loop pitch-compensation flow by removing the extra loop-start seam rewrite that could suppress the fine-tune corrections needed by short looped samples
+- current `152` rebuilds now stay much closer to the good `v0.6.67` loop/pitch behavior while still keeping the newer ADSR modes, diagnostics, one-shot ADPCM flag fix, and the stabilized `188` metadata fix
+
+## v0.6.68 - 2026-04-07
+
+### Added
+
+- new `adsr=auto|authored|template` config option for the MIDI/SF2 workflow
+
+### Changed
+
+- `adsr=authored` is now the default MIDI/SF2 ADSR mode
+- authored MIDI/SF2 ADSR now fits PS2 envelopes against the same `PSXSPU` / `RateTable` model used by `VGMTrans`, instead of relying only on the older local heuristic profile search
+- `adsr=auto` keeps the hybrid policy, `adsr=authored` forces the VGMTrans-style authored ADSR path, and `adsr=template` forces template WD ADSR wherever a template match exists
+
+### Fixed
+
+- real one-shot authored samples no longer keep artificial ADPCM loop flags, which makes loop diagnostics and exported tooling output much closer to the intended KH2 bank behavior
+- rebuilt `188`-style authored WD regions now preserve the hidden first/last-region byte correctly, restoring the good backup-identical `wave0188.wd` result on the stabilized authored path
+- current `152` / `188` MIDI+SF2 ADSR behavior is much closer to the expected sound after combining stricter envelope policy routing with the new VGMTrans-style authored ADSR fit
+
 ## v0.6.67 - 2026-04-07
 
 ### Added

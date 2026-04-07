@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.6.67`
+Version: `v0.6.69`
 
 ## Goal
 
@@ -36,6 +36,7 @@ sf2_pre_eq=0.0
 sf2_pre_lowpass_hz=0
 sf2_auto_lowpass=0
 midi_program_compaction=auto
+adsr=authored
 midi_pitch_bend_workaround=1
 midi_loop=0
 hold_minutes=60
@@ -52,6 +53,7 @@ Meaning:
 - `sf2_pre_lowpass_hz`: optional manual low-pass cutoff for imported SoundFont sample data after normalization
 - `sf2_auto_lowpass`: auto low-pass non-`44100 Hz` SoundFont samples near their original bandwidth after normalization
 - `midi_program_compaction`: controls whether sparse MIDI program numbers stay sparse in the authored WD or get renumbered densely
+- `adsr`: controls whether MIDI/SF2 ADSR uses the VGMTrans-style authored path, the hybrid auto path, or template WD ADSR
 - `midi_pitch_bend_workaround`: enables or disables the current pitch bend approximation system for the MIDI/SF2 workflow
 - `midi_loop`: loops the authored MIDI/BGM sequence when set to `1`
 - `hold_minutes`: minimum note hold time for looped `replacewav` builds
@@ -64,13 +66,19 @@ Notes:
 - `sf2_volume=1.0` is recommended if you want the closest possible `SF2 -> WD -> SF2` roundtrip fidelity
 - `sf2_bank_mode=used` is the normal mode for MIDI-driven rebuilds
 - `sf2_bank_mode=full` is useful if you mainly want the `SF2 -> WD` conversion, including unused presets, for pairing with existing `BGM` files
+- the authored ADSR path now follows the same `PSXSPU` / `RateTable` timing model used by `VGMTrans`, so it is much closer to real KH2 export ADSR behavior than the older heuristic
 - `sf2_pre_eq` is the SF2-side equivalent of the existing WAV `pre_eq`
 - `sf2_pre_lowpass_hz` is a manual override if you already know the rough bandwidth you want to keep
 - `sf2_auto_lowpass=0` is now the safer default; turn it on only if a bank really benefits from it
 - normalized looping SoundFont samples now also try to pull the loop end back to a cleaner PSX-ADPCM block boundary automatically
+- short-loop MIDI/SF2 handling was re-balanced again after a regression on `152`-style material, so loop/pitch behavior is now much closer to the good `v0.6.67` result while keeping the newer ADSR and diagnostics improvements
 - `midi_program_compaction=auto` keeps the current heuristic
 - `midi_program_compaction=compact` removes empty sparse WD slots and renumbers real instruments densely
 - `midi_program_compaction=preserve` keeps original-style sparse program indices and any resulting WD table gaps
+- `adsr=authored` is now the default and recommended mode
+- `adsr=authored` uses the VGMTrans-style PS2 ADSR fit for every authored region
+- `adsr=auto` keeps the hybrid logic and still borrows template WD ADSR where that is considered helpful
+- `adsr=template` forces template WD ADSR wherever a template match exists
 - `midi_pitch_bend_workaround=1` is the current default
 - `midi_pitch_bend_workaround=0` is useful for testing whether bend-driven note retargeting / tuned instrument cloning is causing layout or sound problems
 - `midi_loop=1` is useful when you want the rebuilt PS2 `BGM` to loop ingame instead of behaving like a one-shot sequence
@@ -168,9 +176,17 @@ the tool authors the full SoundFont bank into the rebuilt `WD`, not just the pre
 
 - unused presets are still converted
 - log output says `converted but unused`
-- SoundFont-derived ADSRs are preferred for authored regions
+- with `adsr=auto`, SoundFont-derived / authored ADSR is still preferred in cases where template reuse is known to be a bad fit
 - pitch-variant cloning is disabled to keep the bank layout simpler for pairing with existing `BGM` files
 - if you want to hear the same MIDI/SF2 case without sparse WD gaps, keep `sf2_bank_mode=used` and set `midi_program_compaction=compact`
+
+If you want to compare ADSR modes directly, try:
+
+```ini
+adsr=authored
+adsr=auto
+adsr=template
+```
 
 Output:
 

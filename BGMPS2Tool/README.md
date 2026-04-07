@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.6.67`
+Version: `v0.6.69`
 
 `BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
@@ -22,6 +22,8 @@ Current hard caps:
 - authored `BGM`: `48900 bytes`
 
 The MIDI/BGM rebuild path now also trims per-track padding aggressively. The tool still writes the track-size table and, for looped builds, preserves the original KH2 track-slot structure, but it no longer pads every track back up to the original template slot length if those bytes are unused.
+
+Short-loop handling on tricky MIDI/SF2 material has also been re-balanced again so the current loop/pitch behavior stays much closer to the good `v0.6.67` sound on tracks like `152`, while still keeping the newer ADSR controls and diagnostics.
 
 ## Included Files
 
@@ -79,6 +81,7 @@ Supported options:
 - `sf2_pre_lowpass_hz=...`
 - `sf2_auto_lowpass=...`
 - `midi_program_compaction=...`
+- `adsr=...`
 - `midi_pitch_bend_workaround=...`
 - `midi_loop=...`
 - `hold_minutes=...`
@@ -99,6 +102,12 @@ Notes:
   - `auto` = keep the current heuristic
   - `compact` = remove sparse WD table gaps and renumber authored instruments densely
   - `preserve` = keep original-style sparse program indices even if that leaves empty WD slots between real instruments
+- `adsr` applies only to the MIDI/SF2 workflow.
+  - `authored` = use the VGMTrans-style authored PS2 ADSR fit everywhere
+  - `auto` = use the current hybrid logic and borrow template WD ADSR where that still helps
+  - `template` = force template WD ADSR wherever a template match exists
+- `adsr=authored` is now the default and recommended mode.
+- the authored ADSR path now fits PS2 envelopes against the same `PSXSPU` / `RateTable` model used by `VGMTrans`, so it is much closer to real exported KH2 ADSR behavior than the older local heuristic was
 - `midi_pitch_bend_workaround` applies only to the MIDI/SF2 workflow. When enabled, the tool approximates pitch bend by retargeting notes and, where needed, generating tuned instrument variants. When disabled, pitch bend events are ignored completely.
 - `midi_loop` applies only to the MIDI/SF2 workflow. Use `1` if you want the authored PS2 `BGM` to loop instead of ending as a one-shot sequence.
 - `hold_minutes` is mainly relevant to the older `replacewav` loop workflow.
@@ -149,6 +158,11 @@ If no usable `.sf2` is found, the tool can fall back to the original `waveXXXX.w
   - `sf2_pre_eq`
   - `sf2_pre_lowpass_hz`
   - `sf2_auto_lowpass`
+- the MIDI/SF2 path now also exposes ADSR mode selection through:
+  - `adsr=authored`
+  - `adsr=auto`
+  - `adsr=template`
+- `adsr=authored` is the current recommended default because it now follows the same PS2 ADSR timing model used by `VGMTrans`
 - normalized looping SoundFont samples now also pull the loop end back to a clean PSX-ADPCM block boundary when possible, which is intended to reduce glitchy wraparound on rebuilt short loops
 - The current MIDI importer approximates pitch-bend, but it still does not emit a fully native KH2 continuous pitch opcode.
 - if you only need a converted `WD` bank for pairing with existing `BGM` files, `sf2_bank_mode=full` is useful because it converts unused SoundFont presets too instead of authoring only the presets referenced by the current MIDI
@@ -169,6 +183,12 @@ MIDI/SF2 workflow:
 - `BGMReplaceMidiSf2.bat`
 - `BGMInfo.exe replacemidi "C:\Path\To\music188.mid"`
 - `BGMInfo.exe replacemidi "C:\Path\To\music188.mid" "C:\Path\To\wave0188.sf2"`
+
+ADSR mode examples:
+
+- `adsr=authored` if you want the new VGMTrans-style authored ADSR path everywhere
+- `adsr=auto` if you want the older hybrid behavior for comparison
+- `adsr=template` if you want to force template WD ADSR wherever a match exists
 
 Diagnostics workflow:
 
