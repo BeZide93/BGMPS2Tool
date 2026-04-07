@@ -40,6 +40,7 @@ public static class BgmMidiSf2Rebuilder
     private const int ShortLoopAlignmentThresholdSamples = 512;
     private const int PitchVariantStepCents = 25;
     private const int PitchVariantMaxResidualCents = 50;
+    private const int PitchRetuneNoOpThresholdCents = 5;
     private const int SustainHoldShift = 31;
     private const int SustainHoldStep = 3;
     private static readonly uint[] PsxRateTable = BuildPsxRateTable();
@@ -2026,13 +2027,12 @@ public static class BgmMidiSf2Rebuilder
                 instrument.TemplateInstrumentIndex,
                 instrument.Regions.Select(region =>
                 {
-                    var shiftedRoot = region.RootKey + (region.FineTuneCents / 100.0) + pitchSemitones;
-                    SplitRootNote(shiftedRoot, out var shiftedRootKey, out var shiftedFineTune);
+                    var shiftedPitch = ApplyPitchOffset(region.RootKey, region.FineTuneCents, pitchSemitones, suppressSmallOffsets: true);
                     return region with
                     {
                         Sample = sampleMap[region.Sample.IdentityKey],
-                        RootKey = shiftedRootKey,
-                        FineTuneCents = shiftedFineTune,
+                        RootKey = shiftedPitch.RootKey,
+                        FineTuneCents = shiftedPitch.FineTuneCents,
                     };
                 }).ToList()))
             .ToList();
@@ -2294,6 +2294,7 @@ public static class BgmMidiSf2Rebuilder
                         var envelopeTemplateManifest = envelopeTemplateRegion is null
                             ? null
                             : CreateTemplateRegionManifest(bank, envelopeTemplateRegion);
+                        var pitchManifest = CreatePitchManifest(region);
 
                         return new MidiSf2RegionManifest(
                             regionIndex,
@@ -2320,6 +2321,7 @@ public static class BgmMidiSf2Rebuilder
                             envelopeMatchKind,
                             new MidiSf2EnvelopeManifest(region.Envelope.Adsr1, region.Envelope.Adsr2),
                             new MidiSf2EnvelopeManifest(finalEnvelope.Adsr1, finalEnvelope.Adsr2),
+                            pitchManifest,
                             sourceManifest,
                             templateRegionManifest,
                             envelopeTemplateManifest,
@@ -2353,6 +2355,24 @@ public static class BgmMidiSf2Rebuilder
             IsTemplateRegionLooping(bank, region),
             region.LoopStartBytes,
             new MidiSf2EnvelopeManifest(region.Adsr1, region.Adsr2));
+
+    private static MidiSf2PitchManifest CreatePitchManifest(AuthoredRegion region)
+    {
+        var rootNote = ComposeRootNote(region.RootKey, region.FineTuneCents);
+        EncodeRootNote(rootNote, out var rawFineTune, out var rawUnityKey);
+        var encodedUnityKey = 0x3A - unchecked((sbyte)rawUnityKey);
+        var encodedFineTuneCents = WdSampleTool.ConvertWdFineTune(rawFineTune);
+        var encodedRootNote = ComposeRootNote(encodedUnityKey, encodedFineTuneCents);
+        var quantizationErrorCents = (int)Math.Round((encodedRootNote - rootNote) * 100.0, MidpointRounding.AwayFromZero);
+
+        return new MidiSf2PitchManifest(
+            rootNote,
+            region.Sample.PitchOffsetSemitones,
+            encodedUnityKey,
+            encodedFineTuneCents,
+            encodedRootNote,
+            quantizationErrorCents);
+    }
 
     private static MidiSf2AdpcmFlagManifest AnalyzeAdpcmFlags(byte[] encodedBytes)
     {
@@ -3245,16 +3265,7 @@ public static class BgmMidiSf2Rebuilder
         => Math.Max(0, (loopStartBytes / 0x10) * 28);
 
     private static (int RootKey, int FineTuneCents) ApplySamplePitchOffset(int rootKey, int fineTuneCents, double pitchOffsetSemitones)
-    {
-        if (Math.Abs(pitchOffsetSemitones) < 0.000001)
-        {
-            return (rootKey, fineTuneCents);
-        }
-
-        var shiftedRoot = rootKey + (fineTuneCents / 100.0) + pitchOffsetSemitones;
-        SplitRootNote(shiftedRoot, out var shiftedRootKey, out var shiftedFineTune);
-        return (shiftedRootKey, shiftedFineTune);
-    }
+        => ApplyPitchOffset(rootKey, fineTuneCents, pitchOffsetSemitones, suppressSmallOffsets: true);
 
     private static AuthoredRegion RetuneRegion(AuthoredRegion region, int pitchVariantCents)
     {
@@ -3263,31 +3274,53 @@ public static class BgmMidiSf2Rebuilder
             return region;
         }
 
-        var shiftedRoot = region.RootKey + (region.FineTuneCents / 100.0) - (pitchVariantCents / 100.0);
-        SplitRootNote(shiftedRoot, out var shiftedRootKey, out var shiftedFineTune);
+        var shiftedPitch = ApplyPitchOffset(region.RootKey, region.FineTuneCents, -(pitchVariantCents / 100.0), suppressSmallOffsets: false);
         return region with
         {
-            RootKey = shiftedRootKey,
-            FineTuneCents = shiftedFineTune,
+            RootKey = shiftedPitch.RootKey,
+            FineTuneCents = shiftedPitch.FineTuneCents,
         };
+    }
+
+    private static (int RootKey, int FineTuneCents) ApplyPitchOffset(int rootKey, int fineTuneCents, double pitchOffsetSemitones, bool suppressSmallOffsets)
+    {
+        var rootNote = ComposeRootNote(rootKey, fineTuneCents);
+        if (suppressSmallOffsets && Math.Abs(pitchOffsetSemitones * 100.0) <= PitchRetuneNoOpThresholdCents)
+        {
+            return CanonicalizeRootNote(rootNote);
+        }
+
+        return CanonicalizeRootNote(rootNote + pitchOffsetSemitones);
+    }
+
+    private static double ComposeRootNote(int rootKey, int fineTuneCents)
+        => rootKey + (fineTuneCents / 100.0);
+
+    private static (int RootKey, int FineTuneCents) CanonicalizeRootNote(double rootNote)
+    {
+        var rootKey = (int)Math.Round(rootNote, MidpointRounding.AwayFromZero);
+        var fineTuneCents = (int)Math.Round((rootNote - rootKey) * 100.0, MidpointRounding.AwayFromZero);
+
+        while (fineTuneCents > 50)
+        {
+            rootKey++;
+            fineTuneCents -= 100;
+        }
+
+        while (fineTuneCents < -50)
+        {
+            rootKey--;
+            fineTuneCents += 100;
+        }
+
+        return (rootKey, fineTuneCents);
     }
 
     private static void SplitRootNote(double rootNote, out int rootKey, out int fineTuneCents)
     {
-        var totalCents = (int)Math.Round(rootNote * 100.0, MidpointRounding.AwayFromZero);
-        rootKey = (int)Math.Floor(totalCents / 100.0);
-        fineTuneCents = totalCents - (rootKey * 100);
-        if (fineTuneCents >= 100)
-        {
-            rootKey += fineTuneCents / 100;
-            fineTuneCents %= 100;
-        }
-        else if (fineTuneCents <= -100)
-        {
-            var delta = (int)Math.Ceiling(Math.Abs(fineTuneCents) / 100.0);
-            rootKey -= delta;
-            fineTuneCents += delta * 100;
-        }
+        var canonicalPitch = CanonicalizeRootNote(rootNote);
+        rootKey = canonicalPitch.RootKey;
+        fineTuneCents = canonicalPitch.FineTuneCents;
     }
 
     private static AdsrEnvelope EncodeAdsr(SoundFontRegion region)
@@ -3674,9 +3707,9 @@ public static class BgmMidiSf2Rebuilder
 
     private static void EncodeRootNote(double rootNote, out byte rawFineTune, out byte rawUnityKey)
     {
-        var unityKey = (int)Math.Round(rootNote, MidpointRounding.AwayFromZero);
-        var fineTune = (int)Math.Round((rootNote - unityKey) * 100.0, MidpointRounding.AwayFromZero);
-        fineTune = Math.Clamp(fineTune, -50, 50);
+        var canonicalPitch = CanonicalizeRootNote(rootNote);
+        var unityKey = canonicalPitch.RootKey;
+        var fineTune = canonicalPitch.FineTuneCents;
         rawFineTune = (byte)Math.Clamp((int)Math.Round(((fineTune + 50) / 100.0) * 255.0, MidpointRounding.AwayFromZero), 0, 255);
         rawUnityKey = unchecked((byte)(0x3A - unityKey));
     }
@@ -3844,6 +3877,7 @@ internal sealed record MidiSf2RegionManifest(
     string EnvelopeTemplateMatchKind,
     MidiSf2EnvelopeManifest AuthoredEnvelope,
     MidiSf2EnvelopeManifest FinalEnvelope,
+    MidiSf2PitchManifest Pitch,
     MidiSf2AuthoredRegionSourceManifest Source,
     MidiSf2TemplateRegionManifest? TemplateRegion,
     MidiSf2TemplateRegionManifest? EnvelopeTemplateRegion,
@@ -3857,6 +3891,14 @@ internal sealed record MidiSf2AdpcmFlagManifest(
     byte LastBlockFlag);
 
 internal sealed record MidiSf2EnvelopeManifest(ushort Adsr1, ushort Adsr2);
+
+internal sealed record MidiSf2PitchManifest(
+    double RootNoteSemitones,
+    double PitchOffsetSemitones,
+    int EncodedUnityKey,
+    int EncodedFineTuneCents,
+    double EncodedRootNoteSemitones,
+    int QuantizationErrorCents);
 
 internal sealed record MidiSf2AuthoredRegionSourceManifest(
     string SourceSampleName,

@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## v0.6.70 - 2026-04-07
+
+### Changed
+
+- MIDI/SF2 authored regions now keep a single canonical internal `UnityKey/FineTune` representation, matching the final WD encoding model instead of carrying temporary fine-tune values outside the WD `-50..50` cent range
+
+### Fixed
+
+- tiny residual pitch offsets no longer trigger unnecessary MIDI/SF2 retuning as aggressively, which helps avoid random down-pitched instruments caused by avoidable `UnityKey/FineTune` rewrites
+- the MIDI/SF2 manifest now records final encoded pitch and pitch-quantization diagnostics per region, making RootKey/FineTune regressions much easier to spot
+
 ## v0.6.69 - 2026-04-07
 
 ### Fixed

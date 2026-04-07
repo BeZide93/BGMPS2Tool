@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.6.69`
+Version: `v0.6.70`
 
 ## Goal
 
