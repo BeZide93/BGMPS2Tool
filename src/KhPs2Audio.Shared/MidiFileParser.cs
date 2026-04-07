@@ -111,6 +111,15 @@ internal static class MidiFileParser
                     case 0x03:
                         name = System.Text.Encoding.ASCII.GetString(data, offset, metaLength);
                         break;
+                    case 0x01:
+                    case 0x05:
+                    case 0x06:
+                    case 0x07:
+                    {
+                        var text = System.Text.Encoding.ASCII.GetString(data, offset, metaLength);
+                        events.Add(new MidiMetaTextEvent(tick, order++, metaType, text));
+                        break;
+                    }
                     case 0x2F:
                         return new MidiTrack(trackIndex, name, events, tick);
                     case 0x51 when metaLength == 3:
@@ -284,3 +293,5 @@ internal sealed record MidiControlChangeEvent(long Tick, int Order, int Channel,
 internal sealed record MidiProgramChangeEvent(long Tick, int Order, int Channel, int Program) : MidiEvent(Tick, Order, Channel);
 
 internal sealed record MidiPitchBendEvent(long Tick, int Order, int Channel, int Value) : MidiEvent(Tick, Order, Channel);
+
+internal sealed record MidiMetaTextEvent(long Tick, int Order, int MetaType, string Text) : MidiEvent(Tick, Order, -1);

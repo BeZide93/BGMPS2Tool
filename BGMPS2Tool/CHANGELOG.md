@@ -1,5 +1,98 @@
 # CHANGELOG
 
+## v0.6.66 - 2026-04-07
+
+### Changed
+
+- normalized looping SoundFont samples now pull the loop end back to a clean PSX-ADPCM block boundary when possible, instead of always letting the rebuilt loop end fall on a partial tail block
+- `sf2_auto_lowpass` is no longer enabled by default; it remains available as an opt-in knob, but the new loop-end stabilization is now the main fix path for glitchy normalized loops
+
+## v0.6.65 - 2026-04-07
+
+### Added
+
+- new `sf2_pre_eq`, `sf2_pre_lowpass_hz`, and `sf2_auto_lowpass` config options for the MIDI/SF2 workflow
+
+### Changed
+
+- imported SoundFont samples can now receive the same gentle pre-conditioning concept that already existed on the WAV path, but applied after `44100 Hz` normalization
+- by default, `sf2_auto_lowpass=1` now filters normalized non-`44100 Hz` SoundFont samples near their original bandwidth to reduce “empty” upscaled high-frequency noise
+
+## v0.6.64 - 2026-04-07
+
+### Changed
+
+- SoundFont import now normalizes non-`44100 Hz` sample data to the PS2 target rate during import instead of relying only on root-key / fine-tune sample-rate compensation
+- this is intended to reduce pitch drift and timbre instability on banks whose raw SF2 sample headers use rates such as `32000` or `32768`
+
+## v0.6.63 - 2026-04-07
+
+### Added
+
+- new `sf2_bank_mode=used|full` config option for the MIDI/SF2 workflow
+- `sf2_bank_mode=full` authors the full SoundFont bank into the rebuilt `WD`, including presets that are not referenced by the current MIDI
+
+### Changed
+
+- log output now says `converted but unused` instead of the misleading old `preserved` wording for authored SoundFont presets that are not referenced by the current MIDI
+- in `sf2_bank_mode=full`, pitch-variant instrument cloning is disabled and program compaction stays off so the rebuilt `WD` remains closer to original-style program layout for pairing with existing `BGM` files
+- in `sf2_bank_mode=full`, authored regions prefer the SoundFont-derived ADSR instead of defaulting back to template WD ADSRs
+
+## v0.6.62 - 2026-04-07
+
+### Changed
+
+- authored `BGM` rebuilds no longer pad every track back up to the original template slot length
+- the converter now keeps the track-slot structure and per-track size table, but each authored track only occupies its real encoded byte length
+- this removes large runs of unnecessary `00` padding from looped and compact authored `BGM`s and reduces file size without relying on MIDI-side note thinning
+
+## v0.6.61 - 2026-04-07
+
+### Changed
+
+- added a hard authored `BGM` size guard at `48900` bytes for the MIDI/SF2 workflow, mirroring the existing hard `WD` size guard
+- if a MIDI rebuild would exceed that cap, the tool now stops with a clearer error that explicitly says the failure is on the `BGM` / sequence-density side and suggests practical ways to simplify the MIDI
+
+## v0.6.60 - 2026-04-07
+
+### Fixed
+
+- authored BGM playback tracks now emit safer explicit startup controller state by default when volume or expression are otherwise missing from the MIDI-derived event stream
+- the first authored note-on and note-off in each playback track are now always written in explicit form instead of relying on KH2 to share implicit previous key/velocity state with the converter's renderer assumptions
+
+## v0.6.59 - 2026-04-07
+
+### Fixed
+
+- when an authored instrument has no exact original WD instrument slot to borrow metadata from, the writer now picks the best-matching template region from the whole original bank instead of blindly reusing region 0
+- this keeps hidden KH2 region bytes much closer to plausible original values for remapped SoundFont presets such as sparse GM-style programs
+
+## v0.6.58 - 2026-04-06
+
+### Fixed
+
+- compacted/authored WD instruments now keep track of the correct original template instrument slot when copying KH2 region metadata, instead of reusing the compacted destination index as the template source
+- this keeps hidden region bytes closer to the original bank structure even when MIDI programs are remapped into a denser authored PS2 instrument table
+
+## v0.6.57 - 2026-04-06
+
+### Changed
+
+- when a MIDI preset has to fall back to a different SoundFont preset, bend-aware pitch-variant instrument cloning is now disabled for that build so the authored KH2 bank stays simpler and more compatible
+- fallback-resolved MIDI presets now get their own authored PS2 instrument slot instead of aliasing directly onto the resolved preset's slot, which keeps bank/program mappings unambiguous inside the rebuilt WD/BGM pair
+
+## v0.6.56 - 2026-04-06
+
+### Changed
+
+- narrowed the sparse-program preservation path so it now keeps original-style program indices only for presets actually referenced by the MIDI, instead of authoring the entire SoundFont bank when bend-aware pitch variants are active
+
+## v0.6.55 - 2026-04-06
+
+### Changed
+
+- disabled sparse-program compaction whenever bend-aware pitch-variant instruments are needed, so those cases keep more stable original-style program indices instead of being remapped into a dense compact bank
+
 ## v0.6.54 - 2026-04-06
 
 ### Fixed

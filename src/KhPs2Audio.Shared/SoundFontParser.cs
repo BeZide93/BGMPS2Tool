@@ -6,9 +6,10 @@ internal static class SoundFontParser
     private const ushort RightSampleType = 2;
     private const ushort LeftSampleType = 4;
 
-    public static SoundFontFile Parse(string path)
+    public static SoundFontFile Parse(string path, SoundFontImportOptions? importOptions = null)
     {
         var fullPath = Path.GetFullPath(path);
+        importOptions ??= SoundFontImportOptions.Default;
         var data = File.ReadAllBytes(fullPath);
         if (data.Length < 12)
         {
@@ -115,7 +116,7 @@ internal static class SoundFontParser
                         GeneratorValues.Merge(presetGlobal?.Values, presetZone.Values),
                         GeneratorValues.Merge(instrumentGlobal?.Values, instrumentZone.Values));
 
-                    var materialized = MaterializeRegion(preset, combined, instrumentZone.SampleId, sampleHeaders, sampleData, referenceSampleRate, warnings);
+                    var materialized = MaterializeRegion(preset, combined, instrumentZone.SampleId, sampleHeaders, sampleData, referenceSampleRate, importOptions, warnings);
                     if (materialized is not null)
                     {
                         materializedRegions.Add(materialized);
@@ -367,6 +368,7 @@ internal static class SoundFontParser
         List<Sf2SampleHeader> sampleHeaders,
         short[] sampleData,
         int referenceSampleRate,
+        SoundFontImportOptions importOptions,
         HashSet<string> warnings)
     {
         if (sampleId is null || sampleId.Value < 0 || sampleId.Value >= sampleHeaders.Count)
@@ -388,15 +390,10 @@ internal static class SoundFontParser
             return null;
         }
 
+        monoSlice = NormalizeSampleSliceToReferenceRate(monoSlice, sample, sampleHeaders, referenceSampleRate, importOptions, warnings);
+
         var rootNote = values.OverridingRootKey ?? sample.OriginalPitch;
         var fineTuneCents = sample.PitchCorrection + values.FineTuneCents + (values.CoarseTuneSemitones * 100);
-        if (sample.SampleRate > 0 && referenceSampleRate > 0 && sample.SampleRate != referenceSampleRate)
-        {
-            var sampleRateSemitones = 12.0 * Math.Log(referenceSampleRate / (double)sample.SampleRate, 2.0);
-            var coarseRateSemitones = (int)Math.Floor(sampleRateSemitones);
-            rootNote += coarseRateSemitones;
-            fineTuneCents += (int)Math.Round((sampleRateSemitones - coarseRateSemitones) * 100.0, MidpointRounding.AwayFromZero);
-        }
 
         while (fineTuneCents > 50)
         {
@@ -452,52 +449,169 @@ internal static class SoundFontParser
 
     private static int DetermineReferenceSampleRate(IReadOnlyList<Sf2SampleHeader> sampleHeaders)
     {
-        var usableSamples = sampleHeaders
-            .Where(static sample => sample.SampleRate > 0 && !string.Equals(sample.Name, "EOS", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-        if (usableSamples.Length == 0)
+        return DefaultReferenceSampleRate;
+    }
+
+    private static ExtractedSampleSlice NormalizeSampleSliceToReferenceRate(
+        ExtractedSampleSlice slice,
+        Sf2SampleHeader sample,
+        IReadOnlyList<Sf2SampleHeader> sampleHeaders,
+        int referenceSampleRate,
+        SoundFontImportOptions importOptions,
+        HashSet<string> warnings)
+    {
+        if (referenceSampleRate <= 0)
         {
-            return DefaultReferenceSampleRate;
+            return slice;
         }
 
-        var usableRates = usableSamples
-            .Select(static sample => sample.SampleRate)
-            .OrderBy(static rate => rate)
-            .ToArray();
-        var dominantRate = usableSamples
-            .GroupBy(static sample => sample.SampleRate)
-            .OrderByDescending(static group => group.Count())
-            .ThenBy(static group => Math.Abs(group.Key - 32_000))
-            .Select(static group => group.Key)
-            .First();
-
-        // Tiny waveform-style banks often really are authored around their own sample-rate basis
-        // (for example a clean 32000 Hz). Larger multi-region banks are more stable on the older
-        // conservative 44.1 kHz path, even if their raw samples cluster around ~32768 Hz.
-        if (usableSamples.Length <= 24)
+        var loopStartSample = slice.LoopStartSample;
+        var primaryPcm = slice.Pcm;
+        if (sample.SampleRate > 0 && sample.SampleRate != referenceSampleRate)
         {
-            var dominantCoverage = usableSamples.Count(sample => Math.Abs(sample.SampleRate - dominantRate) <= 64) / (double)usableSamples.Length;
-            if (dominantCoverage >= 0.75)
+            primaryPcm = AudioDsp.ResampleMono(primaryPcm, sample.SampleRate, referenceSampleRate);
+            loopStartSample = Math.Clamp(
+                (int)Math.Round(loopStartSample * (referenceSampleRate / (double)sample.SampleRate), MidpointRounding.AwayFromZero),
+                0,
+                Math.Max(0, primaryPcm.Length - 1));
+        }
+
+        short[]? secondaryPcm = slice.SecondaryPcm;
+        if (secondaryPcm is not null)
+        {
+            var secondaryRate = sample.SampleRate;
+            if (sample.SampleLink >= 0 && sample.SampleLink < sampleHeaders.Count)
             {
-                var smallBankTargets = new[] { 32_000, 32_768 };
-                var snappedSmallBankRate = smallBankTargets
-                    .OrderBy(rate => Math.Abs(rate - dominantRate))
-                    .First();
-                if (Math.Abs(snappedSmallBankRate - dominantRate) / (double)dominantRate <= 0.03)
-                {
-                    return snappedSmallBankRate;
-                }
+                secondaryRate = sampleHeaders[sample.SampleLink].SampleRate;
+            }
+
+            if (secondaryRate > 0 && secondaryRate != referenceSampleRate)
+            {
+                secondaryPcm = AudioDsp.ResampleMono(secondaryPcm, secondaryRate, referenceSampleRate);
             }
         }
 
-        var median = usableRates[usableRates.Length / 2];
-        var commonRates = new[] { 44_100, 48_000 };
-        var snapped = commonRates
-            .OrderBy(rate => Math.Abs(rate - median))
-            .First();
+        if (importOptions.PreEqStrength > 0.0001 || importOptions.ManualLowPassHz > 20.0 || importOptions.AutoLowPass)
+        {
+            primaryPcm = ApplyImportConditioning(primaryPcm, sample.SampleRate, referenceSampleRate, importOptions);
 
-        var relativeError = Math.Abs(snapped - median) / (double)median;
-        return relativeError <= 0.03 ? snapped : DefaultReferenceSampleRate;
+            if (secondaryPcm is not null)
+            {
+                var secondaryRate = sample.SampleRate;
+                if (sample.SampleLink >= 0 && sample.SampleLink < sampleHeaders.Count)
+                {
+                    secondaryRate = sampleHeaders[sample.SampleLink].SampleRate;
+                }
+
+                secondaryPcm = ApplyImportConditioning(secondaryPcm, secondaryRate, referenceSampleRate, importOptions);
+            }
+        }
+
+        var trimmedLoopTailSamples = 0;
+        if (slice.Looping && sample.SampleRate > 0 && sample.SampleRate != referenceSampleRate)
+        {
+            var stabilized = StabilizeNormalizedLoopEnd(primaryPcm, secondaryPcm, loopStartSample);
+            primaryPcm = stabilized.PrimaryPcm;
+            secondaryPcm = stabilized.SecondaryPcm;
+            trimmedLoopTailSamples = stabilized.TrimmedTailSamples;
+        }
+
+        if ((sample.SampleRate > 0 && sample.SampleRate != referenceSampleRate) ||
+            (secondaryPcm is not null && sample.SampleLink >= 0 && sample.SampleLink < sampleHeaders.Count && sampleHeaders[sample.SampleLink].SampleRate > 0 && sampleHeaders[sample.SampleLink].SampleRate != referenceSampleRate))
+        {
+            warnings.Add($"SoundFont sample data is normalized to {referenceSampleRate} Hz during import so KH2 tuning stays closer to the original SF2 playback.");
+        }
+
+        if (importOptions.PreEqStrength > 0.0001)
+        {
+            warnings.Add($"SoundFont import EQ is enabled: sf2_pre_eq={importOptions.PreEqStrength:0.###}.");
+        }
+
+        if (importOptions.ManualLowPassHz > 20.0)
+        {
+            warnings.Add($"SoundFont import low-pass is enabled: sf2_pre_lowpass_hz={importOptions.ManualLowPassHz:0.###}.");
+        }
+        else if (importOptions.AutoLowPass)
+        {
+            warnings.Add("SoundFont import low-pass auto mode is enabled: non-44100 Hz samples are filtered near their original bandwidth after normalization.");
+        }
+
+        if (trimmedLoopTailSamples > 0)
+        {
+            warnings.Add($"SoundFont loop end was pulled {trimmedLoopTailSamples} sample(s) away from the normalized tail so the loop ends on a cleaner PSX-ADPCM boundary.");
+        }
+
+        return slice with
+        {
+            Pcm = primaryPcm,
+            SecondaryPcm = secondaryPcm,
+            LoopStartSample = loopStartSample,
+        };
+    }
+
+    private static short[] ApplyImportConditioning(
+        short[] pcm,
+        int sourceSampleRate,
+        int referenceSampleRate,
+        SoundFontImportOptions importOptions)
+    {
+        if (pcm.Length == 0)
+        {
+            return [];
+        }
+
+        var effectiveLowPassHz = importOptions.ManualLowPassHz > 20.0
+            ? importOptions.ManualLowPassHz
+            : GetAutoLowPassHz(sourceSampleRate, referenceSampleRate, importOptions.AutoLowPass);
+
+        if (importOptions.PreEqStrength <= 0.0001 && effectiveLowPassHz <= 20.0)
+        {
+            return pcm;
+        }
+
+        return AudioDsp.ApplyPreEncodeConditioning(pcm, referenceSampleRate, importOptions.PreEqStrength, effectiveLowPassHz);
+    }
+
+    private static double GetAutoLowPassHz(int sourceSampleRate, int referenceSampleRate, bool autoLowPassEnabled)
+    {
+        if (!autoLowPassEnabled || sourceSampleRate <= 0 || sourceSampleRate >= referenceSampleRate)
+        {
+            return 0.0;
+        }
+
+        return Math.Clamp(sourceSampleRate * 0.45, 1000.0, (referenceSampleRate * 0.5) - 20.0);
+    }
+
+    private static (short[] PrimaryPcm, short[]? SecondaryPcm, int TrimmedTailSamples) StabilizeNormalizedLoopEnd(
+        short[] primaryPcm,
+        short[]? secondaryPcm,
+        int loopStartSample)
+    {
+        if (primaryPcm.Length == 0)
+        {
+            return (primaryPcm, secondaryPcm, 0);
+        }
+
+        var sharedLength = secondaryPcm is null
+            ? primaryPcm.Length
+            : Math.Min(primaryPcm.Length, secondaryPcm.Length);
+        var trimSamples = sharedLength % 28;
+        if (trimSamples == 0)
+        {
+            return (primaryPcm, secondaryPcm, 0);
+        }
+
+        var targetLength = sharedLength - trimSamples;
+        if (targetLength - loopStartSample < 28)
+        {
+            return (primaryPcm, secondaryPcm, 0);
+        }
+
+        var trimmedPrimary = TrimSlice(primaryPcm, targetLength);
+        var trimmedSecondary = secondaryPcm is null
+            ? null
+            : TrimSlice(secondaryPcm, targetLength);
+        return (trimmedPrimary, trimmedSecondary, trimSamples);
     }
 
     private static double TimecentsToSeconds(int timecents)
@@ -701,12 +815,13 @@ internal static class SoundFontParser
                     velocityCandidates = [chosen];
                 }
 
-                foreach (var partitioned in velocityCandidates
+                foreach (var partitioned in CollapsePseudoStereoPairs(velocityCandidates
                     .Select(region => region with { KeyLow = keyLow, KeyHigh = keyHigh, VelocityLow = velocityLow, VelocityHigh = velocityHigh })
                     .OrderBy(static region => region.KeyHigh)
                     .ThenBy(static region => region.VelocityHigh)
                     .ThenBy(static region => region.SourceSampleName, StringComparer.Ordinal)
-                    .ThenBy(static region => region.StereoSourceSampleName ?? string.Empty, StringComparer.Ordinal))
+                    .ThenBy(static region => region.StereoSourceSampleName ?? string.Empty, StringComparer.Ordinal)
+                    .ToList()))
                 {
                     if (authored.Count > 0 && CanMerge(authored[^1], partitioned))
                     {
@@ -723,6 +838,104 @@ internal static class SoundFontParser
         return authored.Count == 0
             ? regions.OrderBy(static region => region.KeyHigh).ThenBy(static region => region.VelocityHigh).ToList()
             : authored;
+    }
+
+    private static List<SoundFontRegion> CollapsePseudoStereoPairs(List<SoundFontRegion> regions)
+    {
+        if (regions.Count < 2)
+        {
+            return regions;
+        }
+
+        var result = new List<SoundFontRegion>(regions.Count);
+        var used = new bool[regions.Count];
+        for (var index = 0; index < regions.Count; index++)
+        {
+            if (used[index])
+            {
+                continue;
+            }
+
+            var current = regions[index];
+            var pairIndex = -1;
+            for (var candidateIndex = index + 1; candidateIndex < regions.Count; candidateIndex++)
+            {
+                if (used[candidateIndex])
+                {
+                    continue;
+                }
+
+                var candidate = regions[candidateIndex];
+                if (!CanCollapsePseudoStereoPair(current, candidate))
+                {
+                    continue;
+                }
+
+                pairIndex = candidateIndex;
+                break;
+            }
+
+            if (pairIndex < 0)
+            {
+                result.Add(current);
+                continue;
+            }
+
+            used[index] = true;
+            used[pairIndex] = true;
+            var left = current.Pan <= regions[pairIndex].Pan ? current : regions[pairIndex];
+            var right = ReferenceEquals(left, current) ? regions[pairIndex] : current;
+            result.Add(left with
+            {
+                StereoIdentityKey = right.IdentityKey,
+                StereoSourceSampleName = right.SourceSampleName,
+                Pan = (left.Pan + right.Pan) / 2f,
+                StereoPcm = right.Pcm,
+            });
+        }
+
+        return result;
+    }
+
+    private static bool CanCollapsePseudoStereoPair(SoundFontRegion left, SoundFontRegion right)
+    {
+        if (left.StereoPcm is not null || right.StereoPcm is not null ||
+            left.StereoIdentityKey is not null || right.StereoIdentityKey is not null)
+        {
+            return false;
+        }
+
+        if (left.IdentityKey == right.IdentityKey)
+        {
+            return false;
+        }
+
+        if (left.KeyLow != right.KeyLow ||
+            left.KeyHigh != right.KeyHigh ||
+            left.VelocityLow != right.VelocityLow ||
+            left.VelocityHigh != right.VelocityHigh ||
+            left.RootKey != right.RootKey ||
+            left.FineTuneCents != right.FineTuneCents ||
+            left.Looping != right.Looping ||
+            left.LoopStartSample != right.LoopStartSample)
+        {
+            return false;
+        }
+
+        if (Math.Abs(left.Volume - right.Volume) >= 0.0001f ||
+            Math.Abs(left.ReverbSend - right.ReverbSend) >= 0.0001f ||
+            Math.Abs(left.AttackSeconds - right.AttackSeconds) >= 0.0001 ||
+            Math.Abs(left.HoldSeconds - right.HoldSeconds) >= 0.0001 ||
+            Math.Abs(left.DecaySeconds - right.DecaySeconds) >= 0.0001 ||
+            Math.Abs(left.SustainLevel - right.SustainLevel) >= 0.0001f ||
+            Math.Abs(left.ReleaseSeconds - right.ReleaseSeconds) >= 0.0001)
+        {
+            return false;
+        }
+
+        return left.Pan < 0f &&
+               right.Pan > 0f &&
+               Math.Abs(left.Pan + right.Pan) < 0.0001f;
     }
 
     private static bool CanMerge(SoundFontRegion left, SoundFontRegion right)
@@ -1008,6 +1221,11 @@ internal sealed record SoundFontPreset(
     int Bank,
     int Program,
     List<SoundFontRegion> Regions);
+
+internal sealed record SoundFontImportOptions(double PreEqStrength, double ManualLowPassHz, bool AutoLowPass)
+{
+    public static SoundFontImportOptions Default { get; } = new(0.0, 0.0, false);
+}
 
 internal sealed record SoundFontRegion(
     int PresetBank,

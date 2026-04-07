@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.6.52`
+Version: `v0.6.66`
 
 ## Goal
 
@@ -31,6 +31,10 @@ Available settings:
 ```ini
 volume=1.0
 sf2_volume=1.0
+sf2_bank_mode=used
+sf2_pre_eq=0.0
+sf2_pre_lowpass_hz=0
+sf2_auto_lowpass=0
 midi_loop=0
 hold_minutes=60
 pre_eq=0.0
@@ -41,6 +45,10 @@ Meaning:
 
 - `volume`: loudness multiplier for imported WAVs
 - `sf2_volume`: loudness multiplier for MIDI + SF2 conversion
+- `sf2_bank_mode`: whether to author only MIDI-used presets or the full SoundFont bank
+- `sf2_pre_eq`: optional tone shaping for imported SoundFont sample data after `44100 Hz` normalization
+- `sf2_pre_lowpass_hz`: optional manual low-pass cutoff for imported SoundFont sample data after normalization
+- `sf2_auto_lowpass`: auto low-pass non-`44100 Hz` SoundFont samples near their original bandwidth after normalization
 - `midi_loop`: loops the authored MIDI/BGM sequence when set to `1`
 - `hold_minutes`: minimum note hold time for looped `replacewav` builds
 - `pre_eq`: optional tone shaping before PS2 encoding for the WAV workflow
@@ -50,20 +58,37 @@ Notes:
 
 - `hold_minutes` mainly affects the older WAV replacement path
 - `sf2_volume=1.0` is recommended if you want the closest possible `SF2 -> WD -> SF2` roundtrip fidelity
+- `sf2_bank_mode=used` is the normal mode for MIDI-driven rebuilds
+- `sf2_bank_mode=full` is useful if you mainly want the `SF2 -> WD` conversion, including unused presets, for pairing with existing `BGM` files
+- `sf2_pre_eq` is the SF2-side equivalent of the existing WAV `pre_eq`
+- `sf2_pre_lowpass_hz` is a manual override if you already know the rough bandwidth you want to keep
+- `sf2_auto_lowpass=0` is now the safer default; turn it on only if a bank really benefits from it
+- normalized looping SoundFont samples now also try to pull the loop end back to a cleaner PSX-ADPCM block boundary automatically
 - `midi_loop=1` is useful when you want the rebuilt PS2 `BGM` to loop ingame instead of behaving like a one-shot sequence
 - if the MIDI contains explicit loop markers, `midi_loop=1` now prefers those markers
 - supported explicit markers include text markers like `loopstart` / `loopend` and control changes `CC111` / `CC110`
 - if the MIDI has no explicit loop markers, `midi_loop=1` falls back to a simple start-to-end loop
+- looped MIDI rebuilds now preserve the original KH2 `BGM` slot layout for better ingame compatibility
 - MIDI/SF2 note lengths come from the MIDI itself
 - allowed `hold_minutes` range: `0.1` to `600`
 - allowed `pre_eq` range: `0.0` to `1.0`
 - allowed `pre_lowpass_hz` range: `0` or `1000` to `20000`
+- allowed `sf2_pre_eq` range: `0.0` to `1.0`
+- allowed `sf2_pre_lowpass_hz` range: `0` or `1000` to `20000`
 
 Suggested starting values for harsh or metallic WAV replacements:
 
 ```ini
 pre_eq=0.35
 pre_lowpass_hz=10000
+```
+
+Suggested starting values for noisy or “empty” upscaled SoundFont banks:
+
+```ini
+sf2_pre_eq=0.15
+sf2_pre_lowpass_hz=0
+sf2_auto_lowpass=1
 ```
 
 ## Method 1: WAV Replacement
@@ -120,7 +145,22 @@ If the SoundFont is not next to the MIDI under the expected `waveXXXX.sf2` name,
 
 If no usable `.sf2` is found, the tool automatically falls back to the original `waveXXXX.wd` and uses the PS2 bank directly.
 
-The MIDI workflow writes a compact PS2 `BGM` that contains only the conductor plus the actually generated playback tracks. If a MIDI only slightly exceeds the original slot sizes, the tool can still expand those slots conservatively. Very dense MIDIs can still be rejected if they exceed the safe rebuild limit.
+The MIDI workflow writes a compact PS2 `BGM` that contains only the conductor plus the actually generated playback tracks. If a MIDI only slightly exceeds the original slot sizes, the tool can still expand those slots conservatively. Very dense MIDIs are rejected once the rebuilt `BGM` would exceed the hard `48900`-byte safety cap.
+
+The tool also trims unnecessary per-track `00` padding from authored `BGM`s. For looped rebuilds it still keeps the original KH2 track-slot structure, but each track now only occupies its real encoded byte length instead of being padded back up to the full template slot length.
+
+If you set:
+
+```ini
+sf2_bank_mode=full
+```
+
+the tool authors the full SoundFont bank into the rebuilt `WD`, not just the presets used by the current MIDI. In that mode:
+
+- unused presets are still converted
+- log output says `converted but unused`
+- SoundFont-derived ADSRs are preferred for authored regions
+- pitch-variant cloning is disabled to keep the bank layout simpler for pairing with existing `BGM` files
 
 Output:
 
@@ -164,6 +204,45 @@ The report compares:
 
 This helps with diagnostics, but it is still not identical to KH2 ingame playback because `VGMTrans` reconstructs standard `MIDI + SF2` data rather than emulating KH2 directly.
 
+## Method 4: VGMTrans Export Batch
+
+Optional, but useful when you want a quick `WD -> SF2` and `BGM -> MIDI` export for comparison work.
+
+This helper is shipped separately from the main `BGMPS2Tool` package.
+
+Look for:
+
+```text
+VGMTrans-v1.3\VGMTransExportKh2.bat
+```
+
+or, in the GitHub upload folder:
+
+```text
+Github\VGMTransExportBatch\
+```
+
+Usage:
+
+1. drag a KH2 `musicXXX.bgm` **or** `waveXXXX.wd` file onto `VGMTransExportKh2.bat`
+2. the batch automatically looks for the matching partner file in the same folder
+3. it then runs `vgmtrans-cli` and exports the reconstructed files
+
+Output:
+
+```text
+vgmtrans-output\BGM XXX.mid
+vgmtrans-output\BGM XXX.sf2
+vgmtrans-output\BGM XXX.dls
+```
+
+Notes:
+
+- you can drag either the `.bgm`, the `.wd`, or both
+- for standard KH2 names like `music152.bgm` + `wave0152.wd`, the batch auto-pairs correctly
+- this export is excellent for structure checks and roundtrip comparisons
+- it is **not** guaranteed to sound identical to KH2 ingame playback, because `VGMTrans` reconstructs standard `MIDI + SF2` data instead of emulating KH2 directly
+
 ## Naming Rules
 
 Recommended names:
@@ -194,9 +273,16 @@ Your files should be:
 
 - The MIDI/SF2 workflow is more structured than the long-note WAV workaround.
 - The current SoundFont importer converts presets, regions, key ranges, tuning, volume, pan, and loops.
+- non-`44100 Hz` SoundFont sample data is now normalized to `44100 Hz` during import before PS2 encoding
+- after that normalization, the MIDI/SF2 path can optionally apply SoundFont-side pre-conditioning with `sf2_pre_eq`, `sf2_pre_lowpass_hz`, and `sf2_auto_lowpass`
+- for normalized looping SoundFont samples, the importer now also trims the loop end back to a clean ADPCM block boundary when that can be done safely
 - Advanced SF2 features such as modulators, filters, and LFO behavior are currently ignored.
-- MIDI pitch-bend is currently ignored.
-- The MIDI workflow now keeps the original PS2 `BGM` slot layout. If a MIDI is too dense to fit safely into the original `musicXXX.bgm`, the tool will stop with a clear error instead of writing an unsafe oversized file.
+- MIDI pitch-bend is currently approximated, not yet written as a true native KH2 pitch opcode.
+- The MIDI workflow now keeps the original PS2 `BGM` slot layout.
+- Hard safety caps currently are:
+  - authored `WD`: `980 KB`
+  - authored `BGM`: `48900 bytes`
+- If a MIDI is too dense and the rebuilt `BGM` would exceed `48900` bytes, the tool now stops with a clear error instead of writing an ingame-silent oversized sequence.
 - Always test rebuilt files ingame after conversion.
 
 ## Troubleshooting
@@ -218,3 +304,15 @@ If you want a newly authored bank instead of the original PS2 bank, place `waveX
 ### The result sounds different from the original SF2 playback
 
 That can happen because KH2 PS2 `WD` is simpler than full SoundFont behavior. The current converter focuses on practical ingame compatibility first.
+
+### "The authored BGM would be ... bytes, but the current hard KH2 BGM safety cap is 48900 bytes."
+
+This means the `WD` side already fit, but the `BGM` / sequence side is too dense for the current safe ingame limit.
+
+Practical fixes:
+
+- remove duplicate or repeated notes
+- thin doubled chord or backing layers
+- reduce overly dense controller data
+- reduce very dense pitch-bend automation
+- simplify the heaviest MIDI tracks first

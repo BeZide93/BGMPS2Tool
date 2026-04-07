@@ -11,14 +11,14 @@ static int Run(string[] args)
     }
 
     var command = args[0].ToLowerInvariant();
-    if (command is not ("info" or "extract" or "render" or "bankdump" or "bankinject" or "replacewav" or "replacemidi"))
+    if (command is not ("info" or "extract" or "render" or "bankdump" or "bankinject" or "replacewav" or "replacemidi" or "vgmtransdiff"))
     {
         PrintUsage();
         return 1;
     }
 
     var needsSampleDirectory = command == "bankinject";
-    var supportsOptionalThirdArgument = command == "replacemidi";
+    var supportsOptionalThirdArgument = command is "replacemidi" or "vgmtransdiff";
     if ((!needsSampleDirectory && !supportsOptionalThirdArgument && args.Length != 2) ||
         (needsSampleDirectory && args.Length != 3) ||
         (supportsOptionalThirdArgument && args.Length is < 2 or > 3))
@@ -48,6 +48,21 @@ static int Run(string[] args)
         {
             var outputPath = BgmMidiSf2Rebuilder.ReplaceFromMidi(args[1], args.Length >= 3 ? args[2] : null, Console.Out);
             Console.WriteLine($"Rebuilt PS2 pair: {outputPath}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 1;
+        }
+    }
+
+    if (command == "vgmtransdiff")
+    {
+        try
+        {
+            var reportPath = VgmTransRoundtripDiagnostics.Run(args[1], args.Length >= 3 ? args[2] : null, Console.Out);
+            Console.WriteLine($"VGMTrans roundtrip report: {reportPath}");
             return 0;
         }
         catch (Exception ex)
@@ -164,6 +179,7 @@ static void PrintInfo(BgmFileInfo info)
     Console.WriteLine("WD sample injection is available through: BGMInfo bankinject <File> <SampleDir>");
     Console.WriteLine("Direct WAV replacement is available through: BGMInfo replacewav <InputWav>");
     Console.WriteLine("Direct MIDI + SoundFont replacement is available through: BGMInfo replacemidi <InputMid> [InputSf2]");
+    Console.WriteLine("VGMTrans roundtrip diagnostics are available through: BGMInfo vgmtransdiff <InputMid> [InputSf2]");
     Console.WriteLine("The native renderer currently targets .bgm + .wd and writes a standalone .ps2.wav next to the output folder.");
     Console.WriteLine("The extract command still uses the sibling Steam .win32.scd when it is available.");
 }
@@ -175,4 +191,5 @@ static void PrintUsage()
     Console.WriteLine("  BGMInfo bankinject <File> <SampleDir>");
     Console.WriteLine("  BGMInfo replacewav <InputWav>");
     Console.WriteLine("  BGMInfo replacemidi <InputMid> [InputSf2]");
+    Console.WriteLine("  BGMInfo vgmtransdiff <InputMid> [InputSf2]");
 }
