@@ -559,7 +559,7 @@ public static class BgmWaveRebuilder
         var unityKey = (int)Math.Round(rootNote, MidpointRounding.AwayFromZero);
         var fineTune = (int)Math.Round((rootNote - unityKey) * 100.0, MidpointRounding.AwayFromZero);
         fineTune = Math.Clamp(fineTune, -50, 50);
-        rawFineTune = (byte)Math.Clamp((int)Math.Round(((fineTune + 50) / 100.0) * 255.0, MidpointRounding.AwayFromZero), 0, 255);
+        rawFineTune = WdSampleTool.EncodeWdFineTune(fineTune);
         rawUnityKey = unchecked((byte)(0x3A - unityKey));
     }
 

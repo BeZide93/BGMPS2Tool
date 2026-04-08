@@ -4,13 +4,79 @@ return Run(args);
 
 static int Run(string[] args)
 {
-    if (args.Length < 2 || args.Length > 3)
+    if (args.Length == 0)
     {
         PrintUsage();
         return 1;
     }
 
     var command = args[0].ToLowerInvariant();
+    if (command == "offsetbgm")
+    {
+        if (args.Length is < 3 or > 4)
+        {
+            PrintUsage();
+            return 1;
+        }
+
+        if (!int.TryParse(args[2], out var instrumentOffset))
+        {
+            Console.Error.WriteLine("Instrument offset must be an integer.");
+            return 1;
+        }
+
+        try
+        {
+            var outputDirectory = args.Length >= 4
+                ? args[3]
+                : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(args[1]))!, "bgm-program-offset");
+            var result = BgmWdTooling.OffsetBgmPrograms(args[1], instrumentOffset, outputDirectory, Console.Out);
+            Console.WriteLine($"Offset BGM: {result.OutputBgmPath}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 1;
+        }
+    }
+
+    if (command == "combinewd")
+    {
+        if (args.Length is < 3 or > 6)
+        {
+            PrintUsage();
+            return 1;
+        }
+
+        try
+        {
+            var outputDirectory = args.Length >= 4
+                ? args[3]
+                : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(args[1]))!, "wd-combiner");
+            var result = BgmWdTooling.CombineBanks(
+                args[1],
+                args[2],
+                outputDirectory,
+                Console.Out,
+                args.Length >= 5 ? args[4] : null,
+                args.Length >= 6 ? args[5] : null);
+            Console.WriteLine($"Combined WD: {result.CombinedWdPath}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 1;
+        }
+    }
+
+    if (args.Length < 2 || args.Length > 3)
+    {
+        PrintUsage();
+        return 1;
+    }
+
     if (command is not ("info" or "extract" or "render" or "bankdump" or "bankinject" or "replacewav" or "replacemidi" or "vgmtransdiff"))
     {
         PrintUsage();
@@ -180,6 +246,8 @@ static void PrintInfo(BgmFileInfo info)
     Console.WriteLine("Direct WAV replacement is available through: BGMInfo replacewav <InputWav>");
     Console.WriteLine("Direct MIDI + SoundFont replacement is available through: BGMInfo replacemidi <InputMid> [InputSf2]");
     Console.WriteLine("VGMTrans roundtrip diagnostics are available through: BGMInfo vgmtransdiff <InputMid> [InputSf2]");
+    Console.WriteLine("BGM program offset is available through: BGMInfo offsetbgm <InputBgm> <InstrumentOffset> [OutputDir]");
+    Console.WriteLine("WD combining is available through: BGMInfo combinewd <PrimaryWd> <SecondaryWd> [OutputDir] [PrimaryBgm] [SecondaryBgm]");
     Console.WriteLine("The native renderer currently targets .bgm + .wd and writes a standalone .ps2.wav next to the output folder.");
     Console.WriteLine("The extract command still uses the sibling Steam .win32.scd when it is available.");
 }
@@ -192,4 +260,6 @@ static void PrintUsage()
     Console.WriteLine("  BGMInfo replacewav <InputWav>");
     Console.WriteLine("  BGMInfo replacemidi <InputMid> [InputSf2]");
     Console.WriteLine("  BGMInfo vgmtransdiff <InputMid> [InputSf2]");
+    Console.WriteLine("  BGMInfo offsetbgm <InputBgm> <InstrumentOffset> [OutputDir]");
+    Console.WriteLine("  BGMInfo combinewd <PrimaryWd> <SecondaryWd> [OutputDir] [PrimaryBgm] [SecondaryBgm]");
 }

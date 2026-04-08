@@ -674,8 +674,7 @@ public static class BgmMidiSf2Rebuilder
                     region.VelocityLow,
                     region.VelocityHigh,
                     isStereo,
-                    region.Looping,
-                    region.LoopStartSample);
+                    region.LoopDescriptor);
                 if (region.Looping)
                 {
                     sourceLoopingRegionCount++;
@@ -701,41 +700,38 @@ public static class BgmMidiSf2Rebuilder
                     sourceOneShotRegionCount++;
                 }
 
-                var authoredIdentityKey = BuildLoopAwareIdentityKey(region.IdentityKey, loopPolicy.Looping, loopPolicy.LoopStartSample);
+                var authoredIdentityKey = BuildLoopAwareIdentityKey(region.IdentityKey, loopPolicy.LoopDescriptor);
                 var authoredSample = GetOrAddAuthoredSample(
                     authoredSamples,
                     authoredIdentityKey,
                     region.SourceSampleName,
                     region.Pcm,
-                    loopPolicy.Looping,
-                    loopPolicy.LoopStartSample,
+                    region.SamplePitch,
+                    loopPolicy.LoopDescriptor,
                     volume,
                     enableShortLoopPitchCompensation);
                 var envelope = EncodeAdsr(region);
-                var leftPitch = ApplySamplePitchOffset(region.RootKey, region.FineTuneCents, authoredSample.PitchOffsetSemitones);
                 var sourceInfo = new AuthoredRegionSourceInfo(
                     region.SourceSampleName,
                     region.RootKey,
                     region.FineTuneCents,
+                    region.SampleRate,
                     region.AttackSeconds,
                     region.HoldSeconds,
                     region.DecaySeconds,
                     region.SustainLevel,
                     region.ReleaseSeconds,
-                    region.Looping,
-                    region.LoopStartSample,
+                    region.LoopDescriptor,
                     regionWasDownmixed,
                     isStereo,
-                    loopPolicy.Looping,
-                    loopPolicy.LoopStartSample);
+                    loopPolicy.LoopDescriptor);
                 var provisionalRegion = new AuthoredRegion(
                     authoredSample,
                     region.KeyLow,
                     region.KeyHigh,
                     region.VelocityLow,
                     region.VelocityHigh,
-                    leftPitch.RootKey,
-                    leftPitch.FineTuneCents,
+                    region.RegionPitch,
                     Math.Clamp(region.Volume, 0f, 1f),
                     isStereo ? GetStereoLeftPan(region.Pan) : Math.Clamp(region.Pan, -1f, 1f),
                     envelope,
@@ -798,17 +794,16 @@ public static class BgmMidiSf2Rebuilder
 
                 if (isStereo)
                 {
-                    var stereoIdentityKey = BuildLoopAwareIdentityKey(region.StereoIdentityKey!, loopPolicy.Looping, loopPolicy.LoopStartSample);
+                    var stereoIdentityKey = BuildLoopAwareIdentityKey(region.StereoIdentityKey!, loopPolicy.LoopDescriptor);
                     var stereoSample = GetOrAddAuthoredSample(
-                        authoredSamples,
-                        stereoIdentityKey,
-                        region.StereoSourceSampleName ?? $"{region.SourceSampleName}-R",
-                        region.StereoPcm!,
-                        loopPolicy.Looping,
-                        loopPolicy.LoopStartSample,
-                        volume,
-                        enableShortLoopPitchCompensation);
-                    var rightPitch = ApplySamplePitchOffset(region.RootKey, region.FineTuneCents, stereoSample.PitchOffsetSemitones);
+                    authoredSamples,
+                    stereoIdentityKey,
+                    region.StereoSourceSampleName ?? $"{region.SourceSampleName}-R",
+                    region.StereoPcm!,
+                    region.SamplePitch,
+                    loopPolicy.LoopDescriptor,
+                    volume,
+                    enableShortLoopPitchCompensation);
 
                     authoredRegions.Add(new AuthoredRegion(
                         stereoSample,
@@ -816,8 +811,7 @@ public static class BgmMidiSf2Rebuilder
                         region.KeyHigh,
                         region.VelocityLow,
                         region.VelocityHigh,
-                        rightPitch.RootKey,
-                        rightPitch.FineTuneCents,
+                        region.RegionPitch,
                         Math.Clamp(region.Volume, 0f, 1f),
                         GetStereoRightPan(region.Pan),
                         envelope,
@@ -936,7 +930,7 @@ public static class BgmMidiSf2Rebuilder
             if (currentTotalBytes <= maxWdBytes)
             {
                 log.WriteLine(
-                    $"WD size guard: resampled authored SF2 content to an effective {Math.Round(SpuSampleRate * scale)} Hz budget so the rebuilt WD stays within {maxWdBytes} bytes.");
+                    $"WD size guard: resampled authored SF2 content by a {Math.Round(scale * 100.0, MidpointRounding.AwayFromZero)}% sample-rate budget (about {Math.Round(SpuSampleRate * scale)} Hz relative to a 44100 Hz baseline) so the rebuilt WD stays within {maxWdBytes} bytes.");
                 return constrainedPlan;
             }
 
@@ -1342,8 +1336,8 @@ public static class BgmMidiSf2Rebuilder
             left.KeyHigh != right.KeyHigh ||
             left.VelocityLow != right.VelocityLow ||
             left.VelocityHigh != right.VelocityHigh ||
-            left.RootKey != right.RootKey ||
-            left.FineTuneCents != right.FineTuneCents)
+            left.SamplePitch != right.SamplePitch ||
+            left.RegionPitch != right.RegionPitch)
         {
             return false;
         }
@@ -1919,6 +1913,8 @@ public static class BgmMidiSf2Rebuilder
             for (var regionIndex = 0; regionIndex < instrument.Regions.Count; regionIndex++)
             {
                 var region = instrument.Regions[regionIndex];
+                var loopInfo = ResolveAuthoredSampleLoopInfo(region.Sample);
+                var effectivePitch = ResolveEffectiveRegionPitch(region);
                 var templateRegion = SelectTemplateRegion(templateRegionsByInstrument, bank.Regions, instrument, region, regionIndex);
                 var envelopeTemplateRegion = region.PreferAuthoredEnvelope
                     ? null
@@ -1932,7 +1928,7 @@ public static class BgmMidiSf2Rebuilder
                 regionBytes[0x02] = (byte)((regionIndex == 0 || regionIndex == instrument.Regions.Count - 1) ? 0x01 : 0x00);
                 BinaryHelpers.WriteUInt32LE(output, 0x20 + (instrument.Index * 4), (uint)(currentRegionOffset - (regionIndex * 0x20)));
                 BinaryHelpers.WriteUInt32LE(regionBytes, 0x04, (uint)sampleOffsetLookup[region.Sample.IdentityKey]);
-                BinaryHelpers.WriteUInt32LE(regionBytes, 0x08, (uint)WdLayoutHelpers.OffsetLoopStartForStoredChunk(region.Sample.Looping, region.Sample.LoopStartBytes));
+                BinaryHelpers.WriteUInt32LE(regionBytes, 0x08, (uint)WdLayoutHelpers.OffsetLoopStartForStoredChunk(loopInfo.Looping, loopInfo.LoopStartBytes));
                 var adsr = envelopeTemplateRegion is not null
                     ? new AdsrEnvelope(envelopeTemplateRegion.Adsr1, envelopeTemplateRegion.Adsr2)
                     : region.Envelope;
@@ -1951,14 +1947,14 @@ public static class BgmMidiSf2Rebuilder
 
                 BinaryHelpers.WriteUInt16LE(regionBytes, 0x0E, adsr.Adsr1);
                 BinaryHelpers.WriteUInt16LE(regionBytes, 0x10, adsr.Adsr2);
-                EncodeRootNote(region.RootKey + (region.FineTuneCents / 100.0), out var fineTune, out var unityKey);
+                EncodeRootNote(ComposeRootNote(effectivePitch.RootKey, effectivePitch.FineTuneCents), out var fineTune, out var unityKey);
                 regionBytes[0x12] = fineTune;
                 regionBytes[0x13] = unityKey;
                 regionBytes[0x14] = (byte)Math.Clamp(region.KeyHigh, 0, 127);
                 regionBytes[0x15] = (byte)Math.Clamp(region.VelocityHigh, 0, 127);
                 regionBytes[0x16] = (byte)Math.Clamp((int)Math.Round(region.Volume * 127.0, MidpointRounding.AwayFromZero), 0, 127);
                 regionBytes[0x17] = EncodeWdPan(region.Pan);
-                regionBytes[0x18] = region.Sample.Looping ? (byte)0x02 : (byte)0x00;
+                regionBytes[0x18] = loopInfo.Looping ? (byte)0x02 : (byte)0x00;
 
                 Buffer.BlockCopy(regionBytes, 0, output, currentRegionOffset, regionBytes.Length);
                 currentRegionOffset += regionBytes.Length;
@@ -1967,9 +1963,9 @@ public static class BgmMidiSf2Rebuilder
 
         sampleBytes.ToArray().CopyTo(output, sampleCollectionOffset);
         var nonLoopSamplesWithLoopFlags = plan.Samples
-            .Where(static sample => !sample.Looping)
+            .Where(sample => !ResolveAuthoredSampleLoopInfo(sample).Looping)
             .Count(sample => AnalyzeAdpcmFlags(sample.EncodedBytes).LoopFlagBlockCount > 0);
-        var loopingRegionCount = plan.Instruments.Sum(static instrument => instrument.Regions.Count(region => region.Sample.Looping));
+        var loopingRegionCount = plan.Instruments.Sum(static instrument => instrument.Regions.Count(region => ResolveAuthoredSampleLoopInfo(region.Sample).Looping));
         log.WriteLine($"Authored WD from MIDI+SF2: {instrumentCount} instrument(s), {totalRegions} region(s), {sampleBytes.Count} bytes of PSX-ADPCM sample data using KH2-style 16-byte zero lead-ins for each sample chunk.");
         log.WriteLine($"Loop diagnostics: {loopingRegionCount} looping region(s), {totalRegions - loopingRegionCount} one-shot region(s), {nonLoopSamplesWithLoopFlags} non-loop sample(s) still carry ADPCM loop flags.");
         log.WriteLine($"ADSR policy: reused template envelopes for {templateEnvelopeReuseCount} region(s), kept authored envelopes for {authoredEnvelopeCount} region(s), template exact-match misses {templateEnvelopeMissCount}.");
@@ -1998,25 +1994,43 @@ public static class BgmMidiSf2Rebuilder
             return plan;
         }
 
-        var pitchSemitones = 12.0 * Math.Log(SpuSampleRate / (double)targetRate, 2.0);
         var sampleMap = new Dictionary<string, AuthoredSample>(StringComparer.Ordinal);
         foreach (var sample in plan.Samples)
         {
-            var loopStartSamples = sample.Looping ? LoopStartBytesToSamples(sample.LoopStartBytes) : 0;
-            var resampledPcm = AudioDsp.ResampleMono(sample.Pcm, SpuSampleRate, targetRate);
-            var resampledLoopStart = sample.Looping
-                ? Math.Clamp((int)Math.Round(loopStartSamples * (targetRate / (double)SpuSampleRate), MidpointRounding.AwayFromZero), 0, Math.Max(0, resampledPcm.Length - 1))
-                : 0;
-            var prepared = PrepareLoopAlignedSample(resampledPcm, sample.Looping, resampledLoopStart, false);
-            var encoded = PsxAdpcmEncoder.Encode(
-                prepared.Pcm,
-                prepared.Looping,
-                prepared.Looping ? SamplesToLoopStartBytes(prepared.LoopStartSample) : 0);
+            var currentSampleRate = ResolveStoredSampleRate(sample.SampleRate, SpuSampleRate);
+            var targetSampleRate = Math.Clamp(
+                (int)Math.Round(currentSampleRate * scale, MidpointRounding.AwayFromZero),
+                4_000,
+                currentSampleRate);
+            if (targetSampleRate >= currentSampleRate)
+            {
+                sampleMap[sample.IdentityKey] = sample;
+                continue;
+            }
+
+            var pitchSemitones = 12.0 * Math.Log(currentSampleRate / (double)targetSampleRate, 2.0);
+            var resampledPcm = AudioDsp.ResampleMono(sample.Pcm, currentSampleRate, targetSampleRate);
+            var resampledRequestedLoop = sample.RequestedLooping
+                ? LoopDescriptor.FromSamples(
+                    true,
+                    Math.Clamp((int)Math.Round(sample.RequestedLoopStartSample * (targetSampleRate / (double)currentSampleRate), MidpointRounding.AwayFromZero), 0, Math.Max(0, resampledPcm.Length - 1)),
+                    resampledPcm.Length,
+                    sample.RequestedLoopDescriptor.Type)
+                : LoopDescriptor.None;
+            var prepared = PrepareLoopAlignedSample(resampledPcm, resampledRequestedLoop, false);
+            var encoded = PsxAdpcmEncoder.Encode(prepared.Pcm, prepared.LoopDescriptor);
             sampleMap[sample.IdentityKey] = sample with
             {
                 Pcm = prepared.Pcm,
                 EncodedBytes = encoded,
-                LoopStartBytes = prepared.Looping ? SamplesToLoopStartBytes(prepared.LoopStartSample) : 0,
+                RequestedLoopDescriptor = resampledRequestedLoop.NormalizeToSamples(prepared.Pcm.Length),
+                EffectiveLoopDescriptor = prepared.LoopDescriptor.NormalizeToSamples(prepared.Pcm.Length),
+                PitchComponents = sample.PitchComponents with
+                {
+                    StoredSampleRate = targetSampleRate,
+                    SampleRatePitchOffsetSemitones = sample.PitchComponents.SampleRatePitchOffsetSemitones + pitchSemitones,
+                    LoopAlignmentPitchOffsetSemitones = prepared.PitchOffsetSemitones,
+                },
             };
         }
 
@@ -2027,12 +2041,9 @@ public static class BgmMidiSf2Rebuilder
                 instrument.TemplateInstrumentIndex,
                 instrument.Regions.Select(region =>
                 {
-                    var shiftedPitch = ApplyPitchOffset(region.RootKey, region.FineTuneCents, pitchSemitones, suppressSmallOffsets: true);
                     return region with
                     {
                         Sample = sampleMap[region.Sample.IdentityKey],
-                        RootKey = shiftedPitch.RootKey,
-                        FineTuneCents = shiftedPitch.FineTuneCents,
                     };
                 }).ToList()))
             .ToList();
@@ -2118,18 +2129,17 @@ public static class BgmMidiSf2Rebuilder
         int velocityLow,
         int velocityHigh,
         bool stereo,
-        bool sourceLooping,
-        int sourceLoopStartSample)
+        LoopDescriptor sourceLoopDescriptor)
     {
-        if (!sourceLooping)
+        if (!sourceLoopDescriptor.Looping)
         {
-            return new ResolvedLoopPolicy(false, 0, "source:one_shot", false, "source_non_loop");
+            return new ResolvedLoopPolicy(LoopDescriptor.None, "source:one_shot", false, "source_non_loop");
         }
 
         if (!templateRegionsByInstrument.TryGetValue(templateInstrumentIndex, out var templateRegions) ||
             templateRegions.Count == 0)
         {
-            return new ResolvedLoopPolicy(true, sourceLoopStartSample, "source:sf2_loop_no_template", false, "no_template_instrument");
+            return new ResolvedLoopPolicy(sourceLoopDescriptor, "source:sf2_loop_no_template", false, "no_template_instrument");
         }
 
         var exactTemplate = templateRegions.FirstOrDefault(template =>
@@ -2140,15 +2150,15 @@ public static class BgmMidiSf2Rebuilder
             template.Stereo == stereo);
         if (exactTemplate is not null && !IsTemplateRegionLooping(templateBank, exactTemplate))
         {
-            return new ResolvedLoopPolicy(false, 0, "template:exact_one_shot_match", true, "exact_one_shot_match");
+            return new ResolvedLoopPolicy(LoopDescriptor.None, "template:exact_one_shot_match", true, "exact_one_shot_match");
         }
 
         if (templateRegions.All(template => !IsTemplateRegionLooping(templateBank, template)))
         {
-            return new ResolvedLoopPolicy(false, 0, "template:instrument_all_one_shot", true, "instrument_all_one_shot");
+            return new ResolvedLoopPolicy(LoopDescriptor.None, "template:instrument_all_one_shot", true, "instrument_all_one_shot");
         }
 
-        return new ResolvedLoopPolicy(true, sourceLoopStartSample, "source:sf2_loop_preserved", false, exactTemplate is null ? "no_exact_template_match" : "exact_looping_match");
+        return new ResolvedLoopPolicy(sourceLoopDescriptor, "source:sf2_loop_preserved", false, exactTemplate is null ? "no_exact_template_match" : "exact_looping_match");
     }
 
     private static bool IsExactEnvelopeTemplateMatch(WdRegionEntry template, AuthoredRegion region)
@@ -2172,18 +2182,30 @@ public static class BgmMidiSf2Rebuilder
 
     private static bool IsTemplateRegionLooping(WdBankFile bank, WdRegionEntry region)
     {
+        var sample = bank.Samples.FirstOrDefault(sample => sample.RelativeOffset == region.SampleOffset);
+        if (sample is not null)
+        {
+            return sample.GetEffectiveLoopInfo(
+                region.LoopStartBytes > 0
+                    ? LoopDescriptor.FromPsxAdpcmBytes(true, region.LoopStartBytes, Math.Max(0, sample.GetOutputBytes().Length - region.LoopStartBytes))
+                    : LoopDescriptor.None).Looping;
+        }
+
         var playbackFlag = region.FileOffset + 0x18 < bank.OriginalBytes.Length
             ? bank.OriginalBytes[region.FileOffset + 0x18]
             : (byte)0x00;
         return region.LoopStartBytes > 0 || (playbackFlag & 0x02) != 0;
     }
 
-    private static string BuildLoopAwareIdentityKey(string baseIdentityKey, bool looping, int loopStartSample)
-        => $"{baseIdentityKey}|loop={(looping ? 1 : 0)}|ls={(looping ? Math.Max(0, loopStartSample) : 0)}";
+    private static string BuildLoopAwareIdentityKey(string baseIdentityKey, LoopDescriptor loopDescriptor)
+        => $"{baseIdentityKey}|loop={(loopDescriptor.Looping ? 1 : 0)}|ls={(loopDescriptor.Looping ? Math.Max(0, loopDescriptor.ResolveStartSamples(int.MaxValue)) : 0)}|lm={loopDescriptor.StartMeasure}";
 
     private static int ScoreTemplateRegion(WdRegionEntry template, AuthoredRegion region, int regionIndex)
     {
         var score = 0;
+        var effectivePitch = ResolveEffectiveRegionPitch(region);
+        var templateRootNote = ComposeRootNote(template.UnityKey, template.FineTuneCents);
+        var effectiveRootNote = ComposeRootNote(effectivePitch.RootKey, effectivePitch.FineTuneCents);
 
         if (template.Stereo == region.Stereo)
         {
@@ -2213,8 +2235,7 @@ public static class BgmMidiSf2Rebuilder
         }
 
         score -= Math.Abs(template.RegionIndex - regionIndex) * 16;
-        score -= Math.Abs(template.UnityKey - region.RootKey) * 24;
-        score -= Math.Abs(template.FineTuneCents - region.FineTuneCents) * 8;
+        score -= (int)Math.Round(Math.Abs(templateRootNote - effectiveRootNote) * 24.0, MidpointRounding.AwayFromZero);
         score -= Math.Abs(template.Volume - region.Volume) < 0.0001f ? 0 : (int)Math.Round(Math.Abs(template.Volume - region.Volume) * 400.0, MidpointRounding.AwayFromZero);
         score -= Math.Abs(template.Pan - region.Pan) < 0.0001f ? 0 : (int)Math.Round(Math.Abs(template.Pan - region.Pan) * 300.0, MidpointRounding.AwayFromZero);
         score -= Math.Abs(template.Adsr1 - region.Envelope.Adsr1) / 8;
@@ -2246,6 +2267,8 @@ public static class BgmMidiSf2Rebuilder
                 var regionManifests = instrument.Regions
                     .Select((region, regionIndex) =>
                     {
+                        var resolvedPitch = ResolveEffectiveRegionPitch(region);
+                        var loopInfo = ResolveAuthoredSampleLoopInfo(region.Sample);
                         var templateRegion = SelectTemplateRegion(templateRegionsByInstrument, bank.Regions, instrument, region, regionIndex);
                         var envelopeTemplateRegion = region.PreferAuthoredEnvelope
                             ? null
@@ -2259,8 +2282,7 @@ public static class BgmMidiSf2Rebuilder
                             region.VelocityLow,
                             region.VelocityHigh,
                             region.Stereo,
-                            region.SourceInfo.SourceLooping,
-                            region.SourceInfo.SourceLoopStartSample);
+                            region.SourceInfo.SourceLoopDescriptor);
                         var usedTemplateEnvelope = envelopeTemplateRegion is not null;
                         var finalEnvelope = usedTemplateEnvelope
                             ? new AdsrEnvelope(envelopeTemplateRegion!.Adsr1, envelopeTemplateRegion.Adsr2)
@@ -2273,10 +2295,13 @@ public static class BgmMidiSf2Rebuilder
                                     : "best_scored_region"
                                 : "no_template_match";
                         var adpcmFlags = AnalyzeAdpcmFlags(region.Sample.EncodedBytes);
+                        var sourceLoopManifest = CreateLoopManifest(region.SourceInfo.SourceLoopDescriptor);
+                        var effectiveLoopManifest = CreateLoopManifest(region.SourceInfo.EffectiveLoopDescriptor);
                         var sourceManifest = new MidiSf2AuthoredRegionSourceManifest(
                             region.SourceInfo.SourceSampleName,
                             region.SourceInfo.SourceRootKey,
                             region.SourceInfo.SourceFineTuneCents,
+                            region.SourceInfo.SourceSampleRate,
                             region.SourceInfo.AttackSeconds,
                             region.SourceInfo.HoldSeconds,
                             region.SourceInfo.DecaySeconds,
@@ -2287,7 +2312,9 @@ public static class BgmMidiSf2Rebuilder
                             region.SourceInfo.WasDownmixedPseudoStereo,
                             region.SourceInfo.SourceStereoPair,
                             region.SourceInfo.EffectiveLooping,
-                            region.SourceInfo.EffectiveLoopStartSample);
+                            region.SourceInfo.EffectiveLoopStartSample,
+                            sourceLoopManifest,
+                            effectiveLoopManifest);
                         var templateRegionManifest = templateRegion is null
                             ? null
                             : CreateTemplateRegionManifest(bank, templateRegion);
@@ -2304,13 +2331,14 @@ public static class BgmMidiSf2Rebuilder
                             region.KeyHigh,
                             region.VelocityLow,
                             region.VelocityHigh,
-                            region.RootKey,
-                            region.FineTuneCents,
+                            resolvedPitch.RootKey,
+                            resolvedPitch.FineTuneCents,
                             region.Volume,
                             region.Pan,
                             region.Stereo,
-                            region.Sample.Looping,
-                            region.Sample.LoopStartBytes,
+                            loopInfo.Looping,
+                            loopInfo.LoopStartBytes,
+                            CreateLoopManifest(region.Sample.EffectiveLoopDescriptor),
                             region.LoopPolicyReason,
                             region.UsedTemplateLoopPolicy,
                             region.LoopTemplateMatchKind,
@@ -2339,7 +2367,13 @@ public static class BgmMidiSf2Rebuilder
     }
 
     private static MidiSf2TemplateRegionManifest CreateTemplateRegionManifest(WdBankFile bank, WdRegionEntry region)
-        => new(
+    {
+        var sample = bank.Samples.FirstOrDefault(sample => sample.RelativeOffset == region.SampleOffset);
+        var loopInfo = sample?.GetEffectiveLoopInfo(
+            region.LoopStartBytes > 0
+                ? LoopDescriptor.FromPsxAdpcmBytes(true, region.LoopStartBytes, Math.Max(0, sample.GetOutputBytes().Length - region.LoopStartBytes))
+                : LoopDescriptor.None);
+        return new MidiSf2TemplateRegionManifest(
             region.InstrumentIndex,
             region.RegionIndex,
             region.FileOffset,
@@ -2352,13 +2386,14 @@ public static class BgmMidiSf2Rebuilder
             region.FineTuneCents,
             region.Volume,
             region.Pan,
-            IsTemplateRegionLooping(bank, region),
-            region.LoopStartBytes,
+            loopInfo?.Looping ?? IsTemplateRegionLooping(bank, region),
+            loopInfo?.LoopStartBytes ?? region.LoopStartBytes,
             new MidiSf2EnvelopeManifest(region.Adsr1, region.Adsr2));
+    }
 
     private static MidiSf2PitchManifest CreatePitchManifest(AuthoredRegion region)
     {
-        var rootNote = ComposeRootNote(region.RootKey, region.FineTuneCents);
+        var rootNote = GetEffectiveRegionRootNote(region);
         EncodeRootNote(rootNote, out var rawFineTune, out var rawUnityKey);
         var encodedUnityKey = 0x3A - unchecked((sbyte)rawUnityKey);
         var encodedFineTuneCents = WdSampleTool.ConvertWdFineTune(rawFineTune);
@@ -2367,6 +2402,16 @@ public static class BgmMidiSf2Rebuilder
 
         return new MidiSf2PitchManifest(
             rootNote,
+            region.Sample.PitchComponents.SourceRootNoteSemitones,
+            region.Sample.PitchComponents.OriginalPitch,
+            region.Sample.PitchComponents.PitchCorrectionCents,
+            region.PitchComponents.OverridingRootKey,
+            region.PitchComponents.CoarseTuneSemitones,
+            region.PitchComponents.FineTuneCents,
+            region.RegionPitchOffsetSemitones,
+            region.Sample.SampleRate,
+            region.Sample.PitchComponents.SampleRatePitchOffsetSemitones,
+            region.Sample.PitchComponents.LoopAlignmentPitchOffsetSemitones,
             region.Sample.PitchOffsetSemitones,
             encodedUnityKey,
             encodedFineTuneCents,
@@ -2374,16 +2419,29 @@ public static class BgmMidiSf2Rebuilder
             quantizationErrorCents);
     }
 
+    private static MidiSf2LoopManifest CreateLoopManifest(LoopDescriptor loopDescriptor)
+    {
+        return new MidiSf2LoopManifest(
+            loopDescriptor.Looping,
+            loopDescriptor.Start,
+            loopDescriptor.Length,
+            loopDescriptor.StartMeasure.ToString(),
+            loopDescriptor.LengthMeasure.ToString(),
+            loopDescriptor.Type.ToString());
+    }
+
     private static MidiSf2AdpcmFlagManifest AnalyzeAdpcmFlags(byte[] encodedBytes)
     {
         if (encodedBytes.Length == 0)
         {
-            return new MidiSf2AdpcmFlagManifest(0, 0, 0, 0, 0);
+            return new MidiSf2AdpcmFlagManifest(0, 0, 0, -1, 0, 0, 0);
         }
 
         var blockCount = encodedBytes.Length / 0x10;
         var loopFlagBlockCount = 0;
+        var loopStartFlagBlockCount = 0;
         var endFlagBlockCount = 0;
+        var firstLoopStartFlagBlockIndex = -1;
         byte firstBlockFlag = 0;
         byte lastBlockFlag = 0;
         for (var blockIndex = 0; blockIndex < blockCount; blockIndex++)
@@ -2400,13 +2458,22 @@ public static class BgmMidiSf2Rebuilder
                 loopFlagBlockCount++;
             }
 
+            if ((flag & 0x04) != 0)
+            {
+                loopStartFlagBlockCount++;
+                if (firstLoopStartFlagBlockIndex < 0)
+                {
+                    firstLoopStartFlagBlockIndex = blockIndex;
+                }
+            }
+
             if ((flag & 0x01) != 0)
             {
                 endFlagBlockCount++;
             }
         }
 
-        return new MidiSf2AdpcmFlagManifest(blockCount, loopFlagBlockCount, endFlagBlockCount, firstBlockFlag, lastBlockFlag);
+        return new MidiSf2AdpcmFlagManifest(blockCount, loopFlagBlockCount, loopStartFlagBlockCount, firstLoopStartFlagBlockIndex, endFlagBlockCount, firstBlockFlag, lastBlockFlag);
     }
 
     private static int RangeOverlapScore(int leftLow, int leftHigh, int rightLow, int rightHigh)
@@ -3147,8 +3214,8 @@ public static class BgmMidiSf2Rebuilder
         string identityKey,
         string sourceSampleName,
         short[] pcm,
-        bool looping,
-        int loopStartSample,
+        SamplePitchComponents samplePitch,
+        LoopDescriptor requestedLoopDescriptor,
         double volume,
         bool enableShortLoopPitchCompensation)
     {
@@ -3158,35 +3225,38 @@ public static class BgmMidiSf2Rebuilder
         }
 
         var adjustedPcm = ApplyVolume(pcm, volume);
-        var prepared = PrepareLoopAlignedSample(adjustedPcm, looping, loopStartSample, enableShortLoopPitchCompensation);
-        var encoded = PsxAdpcmEncoder.Encode(
-            prepared.Pcm,
-            prepared.Looping,
-            prepared.Looping ? SamplesToLoopStartBytes(prepared.LoopStartSample) : 0);
+        var prepared = PrepareLoopAlignedSample(adjustedPcm, requestedLoopDescriptor, enableShortLoopPitchCompensation);
+        var encoded = PsxAdpcmEncoder.Encode(prepared.Pcm, prepared.LoopDescriptor);
+        var effectiveSampleRate = ResolveStoredSampleRate(samplePitch.StoredSampleRate, SpuSampleRate);
         authoredSample = new AuthoredSample(
             identityKey,
             sourceSampleName,
             prepared.Pcm,
             encoded,
-            prepared.Looping,
-            prepared.Looping ? SamplesToLoopStartBytes(prepared.LoopStartSample) : 0,
-            prepared.PitchOffsetSemitones);
+            requestedLoopDescriptor.NormalizeToSamples(prepared.Pcm.Length),
+            prepared.LoopDescriptor.NormalizeToSamples(prepared.Pcm.Length),
+            samplePitch with
+            {
+                StoredSampleRate = effectiveSampleRate,
+                SampleRatePitchOffsetSemitones = GetSampleRatePitchOffsetSemitones(effectiveSampleRate),
+                LoopAlignmentPitchOffsetSemitones = prepared.PitchOffsetSemitones,
+            });
         authoredSamples.Add(identityKey, authoredSample);
         return authoredSample;
     }
 
-    private static PreparedLoopSample PrepareLoopAlignedSample(short[] pcm, bool looping, int loopStartSample, bool enableShortLoopPitchCompensation)
+    private static PreparedLoopSample PrepareLoopAlignedSample(short[] pcm, LoopDescriptor loopDescriptor, bool enableShortLoopPitchCompensation)
     {
-        if (!looping || pcm.Length == 0)
+        if (!loopDescriptor.Looping || pcm.Length == 0)
         {
-            return new PreparedLoopSample(pcm, looping, 0, 0.0);
+            return new PreparedLoopSample(pcm, LoopDescriptor.None, 0.0);
         }
 
-        var safeLoopStart = Math.Clamp(loopStartSample, 0, Math.Max(0, pcm.Length - 1));
+        var safeLoopStart = loopDescriptor.ResolveStartSamples(pcm.Length);
         var remainder = safeLoopStart % 28;
         if (remainder == 0)
         {
-            return new PreparedLoopSample(pcm, true, safeLoopStart, 0.0);
+            return new PreparedLoopSample(pcm, LoopDescriptor.FromSamples(true, safeLoopStart, pcm.Length, loopDescriptor.Type), 0.0);
         }
 
         var originalLoopLength = pcm.Length - safeLoopStart;
@@ -3199,7 +3269,7 @@ public static class BgmMidiSf2Rebuilder
 
             if (alignedLoopStart == safeLoopStart && alignedLoopLength == originalLoopLength)
             {
-                return new PreparedLoopSample(pcm, true, safeLoopStart, 0.0);
+                return new PreparedLoopSample(pcm, LoopDescriptor.FromSamples(true, safeLoopStart, pcm.Length, loopDescriptor.Type), 0.0);
             }
 
             var intro = alignedLoopStart > 0
@@ -3214,13 +3284,13 @@ public static class BgmMidiSf2Rebuilder
 
             Buffer.BlockCopy(loop, 0, rebuilt, intro.Length * sizeof(short), loop.Length * sizeof(short));
             var pitchOffsetSemitones = 12.0 * Math.Log(originalLoopLength / (double)alignedLoopLength, 2.0);
-            return new PreparedLoopSample(rebuilt, true, alignedLoopStart, pitchOffsetSemitones);
+            return new PreparedLoopSample(rebuilt, LoopDescriptor.FromSamples(true, alignedLoopStart, rebuilt.Length, loopDescriptor.Type), pitchOffsetSemitones);
         }
 
         // For short looping instrument samples, inserting duplicated PCM at the loop point
         // can create an audible stutter each time the sample wraps. Prefer a conservative
         // block-aligned loop that starts slightly earlier over duplicating audio content.
-        return new PreparedLoopSample(pcm, true, safeLoopStart - remainder, 0.0);
+        return new PreparedLoopSample(pcm, LoopDescriptor.FromSamples(true, safeLoopStart - remainder, pcm.Length, loopDescriptor.Type), 0.0);
     }
 
     private static int AlignToNearestAdpcmBoundary(int sampleCount, bool allowZero)
@@ -3257,15 +3327,22 @@ public static class BgmMidiSf2Rebuilder
     }
 
     private static int SamplesToLoopStartBytes(int loopStartSample)
-    {
-        return Math.Max(0, (loopStartSample / 28) * 0x10);
-    }
+        => PsxAdpcmLoopMath.SamplesToBytes(loopStartSample);
 
     private static int LoopStartBytesToSamples(int loopStartBytes)
-        => Math.Max(0, (loopStartBytes / 0x10) * 28);
+        => PsxAdpcmLoopMath.BytesToSamples(loopStartBytes);
 
-    private static (int RootKey, int FineTuneCents) ApplySamplePitchOffset(int rootKey, int fineTuneCents, double pitchOffsetSemitones)
-        => ApplyPitchOffset(rootKey, fineTuneCents, pitchOffsetSemitones, suppressSmallOffsets: true);
+    private static double GetEffectiveSampleRootNote(AuthoredSample sample)
+        => sample.PitchComponents.EffectiveRootNoteSemitones;
+
+    private static double GetEffectiveRegionRootNote(AuthoredRegion region)
+        => region.PitchComponents.ResolveEffectiveRootNoteSemitones(region.Sample.PitchComponents);
+
+    private static (int RootKey, int FineTuneCents) ResolveEffectiveRegionPitch(AuthoredRegion region)
+        => CanonicalizeRootNote(GetEffectiveRegionRootNote(region));
+
+    private static PsxAdpcmLoopInfo ResolveAuthoredSampleLoopInfo(AuthoredSample sample)
+        => WdSampleTool.ResolvePreferredLoopInfo(sample.EncodedBytes, sample.EffectiveLoopDescriptor);
 
     private static AuthoredRegion RetuneRegion(AuthoredRegion region, int pitchVariantCents)
     {
@@ -3274,11 +3351,12 @@ public static class BgmMidiSf2Rebuilder
             return region;
         }
 
-        var shiftedPitch = ApplyPitchOffset(region.RootKey, region.FineTuneCents, -(pitchVariantCents / 100.0), suppressSmallOffsets: false);
         return region with
         {
-            RootKey = shiftedPitch.RootKey,
-            FineTuneCents = shiftedPitch.FineTuneCents,
+            PitchComponents = region.PitchComponents with
+            {
+                FineTuneCents = region.PitchComponents.FineTuneCents - pitchVariantCents,
+            },
         };
     }
 
@@ -3291,6 +3369,27 @@ public static class BgmMidiSf2Rebuilder
         }
 
         return CanonicalizeRootNote(rootNote + pitchOffsetSemitones);
+    }
+
+    private static int ResolveStoredSampleRate(int sourceSampleRate, int fallbackSampleRate)
+    {
+        if (sourceSampleRate > 0)
+        {
+            return sourceSampleRate;
+        }
+
+        return fallbackSampleRate > 0 ? fallbackSampleRate : SpuSampleRate;
+    }
+
+    private static double GetSampleRatePitchOffsetSemitones(int storedSampleRate)
+    {
+        var effectiveSampleRate = ResolveStoredSampleRate(storedSampleRate, SpuSampleRate);
+        if (effectiveSampleRate == SpuSampleRate)
+        {
+            return 0.0;
+        }
+
+        return 12.0 * Math.Log(SpuSampleRate / (double)effectiveSampleRate, 2.0);
     }
 
     private static double ComposeRootNote(int rootKey, int fineTuneCents)
@@ -3710,7 +3809,7 @@ public static class BgmMidiSf2Rebuilder
         var canonicalPitch = CanonicalizeRootNote(rootNote);
         var unityKey = canonicalPitch.RootKey;
         var fineTune = canonicalPitch.FineTuneCents;
-        rawFineTune = (byte)Math.Clamp((int)Math.Round(((fineTune + 50) / 100.0) * 255.0, MidpointRounding.AwayFromZero), 0, 255);
+        rawFineTune = WdSampleTool.EncodeWdFineTune(fineTune);
         rawUnityKey = unchecked((byte)(0x3A - unityKey));
     }
 
@@ -3745,8 +3844,7 @@ internal sealed record AuthoredRegion(
     int KeyHigh,
     int VelocityLow,
     int VelocityHigh,
-    int RootKey,
-    int FineTuneCents,
+    RegionPitchComponents PitchComponents,
     float Volume,
     float Pan,
     AdsrEnvelope Envelope,
@@ -3756,23 +3854,34 @@ internal sealed record AuthoredRegion(
     string EnvelopePolicyReason,
     string LoopPolicyReason,
     bool UsedTemplateLoopPolicy,
-    string LoopTemplateMatchKind);
+    string LoopTemplateMatchKind)
+{
+    public double RegionPitchOffsetSemitones => PitchComponents.ResolveOffsetFromSourcePitch(Sample.PitchComponents);
+}
 
 internal sealed record AuthoredRegionSourceInfo(
     string SourceSampleName,
     int SourceRootKey,
     int SourceFineTuneCents,
+    int SourceSampleRate,
     double AttackSeconds,
     double HoldSeconds,
     double DecaySeconds,
     float SustainLevel,
     double ReleaseSeconds,
-    bool SourceLooping,
-    int SourceLoopStartSample,
+    LoopDescriptor SourceLoopDescriptor,
     bool WasDownmixedPseudoStereo,
     bool SourceStereoPair,
-    bool EffectiveLooping,
-    int EffectiveLoopStartSample);
+    LoopDescriptor EffectiveLoopDescriptor)
+{
+    public bool SourceLooping => SourceLoopDescriptor.Looping;
+
+    public int SourceLoopStartSample => SourceLoopDescriptor.ResolveStartSamples(int.MaxValue);
+
+    public bool EffectiveLooping => EffectiveLoopDescriptor.Looping;
+
+    public int EffectiveLoopStartSample => EffectiveLoopDescriptor.ResolveStartSamples(int.MaxValue);
+}
 
 internal sealed class ActiveChannelNote
 {
@@ -3794,9 +3903,24 @@ internal sealed record AuthoredSample(
     string SourceSampleName,
     short[] Pcm,
     byte[] EncodedBytes,
-    bool Looping,
-    int LoopStartBytes,
-    double PitchOffsetSemitones);
+    LoopDescriptor RequestedLoopDescriptor,
+    LoopDescriptor EffectiveLoopDescriptor,
+    SamplePitchComponents PitchComponents)
+{
+    public bool RequestedLooping => RequestedLoopDescriptor.Looping;
+
+    public int RequestedLoopStartSample => RequestedLoopDescriptor.ResolveStartSamples(Pcm.Length);
+
+    public bool Looping => EffectiveLoopDescriptor.Looping;
+
+    public int LoopStartSample => EffectiveLoopDescriptor.ResolveStartSamples(Pcm.Length);
+
+    public int SampleRate => PitchComponents.StoredSampleRate;
+
+    public double SampleBaseRootNoteSemitones => PitchComponents.SourceRootNoteSemitones;
+
+    public double PitchOffsetSemitones => PitchComponents.PitchOffsetSemitones;
+}
 
 internal sealed record AdsrEnvelope(ushort Adsr1, ushort Adsr2);
 
@@ -3867,6 +3991,7 @@ internal sealed record MidiSf2RegionManifest(
     bool Stereo,
     bool Looping,
     int LoopStartBytes,
+    MidiSf2LoopManifest Loop,
     string LoopPolicyReason,
     bool UsedTemplateLoopPolicy,
     string LoopTemplateMatchKind,
@@ -3886,6 +4011,8 @@ internal sealed record MidiSf2RegionManifest(
 internal sealed record MidiSf2AdpcmFlagManifest(
     int BlockCount,
     int LoopFlagBlockCount,
+    int LoopStartFlagBlockCount,
+    int FirstLoopStartFlagBlockIndex,
     int EndFlagBlockCount,
     byte FirstBlockFlag,
     byte LastBlockFlag);
@@ -3894,6 +4021,16 @@ internal sealed record MidiSf2EnvelopeManifest(ushort Adsr1, ushort Adsr2);
 
 internal sealed record MidiSf2PitchManifest(
     double RootNoteSemitones,
+    double SampleBaseRootNoteSemitones,
+    int SampleOriginalPitch,
+    int SamplePitchCorrectionCents,
+    int? RegionOverridingRootKey,
+    int RegionCoarseTuneSemitones,
+    int RegionFineTuneCents,
+    double RegionPitchOffsetSemitones,
+    int StoredSampleRate,
+    double SampleRatePitchOffsetSemitones,
+    double LoopAlignmentPitchOffsetSemitones,
     double PitchOffsetSemitones,
     int EncodedUnityKey,
     int EncodedFineTuneCents,
@@ -3904,6 +4041,7 @@ internal sealed record MidiSf2AuthoredRegionSourceManifest(
     string SourceSampleName,
     int SourceRootKey,
     int SourceFineTuneCents,
+    int SourceSampleRate,
     double AttackSeconds,
     double HoldSeconds,
     double DecaySeconds,
@@ -3914,7 +4052,9 @@ internal sealed record MidiSf2AuthoredRegionSourceManifest(
     bool WasDownmixedPseudoStereo,
     bool SourceStereoPair,
     bool EffectiveLooping,
-    int EffectiveLoopStartSample);
+    int EffectiveLoopStartSample,
+    MidiSf2LoopManifest SourceLoop,
+    MidiSf2LoopManifest EffectiveLoop);
 
 internal sealed record MidiSf2TemplateRegionManifest(
     int InstrumentIndex,
@@ -3933,18 +4073,35 @@ internal sealed record MidiSf2TemplateRegionManifest(
     int LoopStartBytes,
     MidiSf2EnvelopeManifest Envelope);
 
+internal sealed record MidiSf2LoopManifest(
+    bool Looping,
+    int Start,
+    int Length,
+    string StartMeasure,
+    string LengthMeasure,
+    string Type);
+
 internal sealed record GeneratedTrack(int Channel, string Name, byte[] Bytes);
 
-internal sealed record PreparedLoopSample(short[] Pcm, bool Looping, int LoopStartSample, double PitchOffsetSemitones);
+internal sealed record PreparedLoopSample(short[] Pcm, LoopDescriptor LoopDescriptor, double PitchOffsetSemitones)
+{
+    public bool Looping => LoopDescriptor.Looping;
+
+    public int LoopStartSample => LoopDescriptor.ResolveStartSamples(Pcm.Length);
+}
 
 internal sealed record PitchTarget(byte Program, int Key);
 
 internal sealed record ResolvedLoopPolicy(
-    bool Looping,
-    int LoopStartSample,
+    LoopDescriptor LoopDescriptor,
     string LoopPolicyReason,
     bool UsedTemplateLoopPolicy,
-    string LoopTemplateMatchKind);
+    string LoopTemplateMatchKind)
+{
+    public bool Looping => LoopDescriptor.Looping;
+
+    public int LoopStartSample => LoopDescriptor.ResolveStartSamples(int.MaxValue);
+}
 
 internal enum MidiLoopMarkerKind
 {

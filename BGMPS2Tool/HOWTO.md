@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.6.70`
+Version: `v0.8.0`
 
 ## Goal
 
@@ -15,6 +15,45 @@ Replace a PS2 `KH2FM` music track either:
 - Microsoft `.NET 10` Runtime
 
 No other external tools are required for this package.
+
+## Method 0: GUI Workflow
+
+The package now includes `BGMPS2ToolGUI.exe` in addition to the existing batch files.
+
+The GUI keeps using the same `config.ini`, so the old batch/drag-and-drop workflow and the new GUI stay in sync.
+
+Recommended GUI setup:
+
+1. start `BGMPS2ToolGUI.exe`
+2. set the template root to your exported KH2FM BGM directory, for example:
+
+```text
+_Extracted KH2FM\export\@KH2\bgm
+```
+
+3. use the `Show Tracklist` button if you want to inspect the bundled track number, name, and description list in a formatted table
+4. pick either:
+   - a `MIDI + SF2`
+   - or a `WAV`
+5. adjust the same settings that also live in `config.ini`
+6. rebuild
+7. use the built-in source/output preview player for direct comparison
+8. use `Clear Temp Preview` on the Compare tab if you want to remove rendered preview files from `%TEMP%`
+9. use the small `i` buttons in the right-side settings area if you want a quick explanation for any `config.ini` option
+10. use the `Tools` tab for:
+   - `BGM 0020xx Offset Tool`
+   - `Field/Battle Maker / WD Combiner`
+
+CLI equivalents:
+
+```powershell
+.\BGMInfo.exe offsetbgm "C:\Path\To\music188.bgm" 8
+.\BGMInfo.exe combinewd "C:\Path\To\wave0152.wd" "C:\Path\To\wave0188.wd"
+```
+
+Important GUI note:
+
+- the GUI can resolve `musicXXX.bgm` + `waveXXXX.wd` from the template root, so those files do not have to live next to the MIDI/SF2 or WAV anymore
 
 ## Optional Configuration
 
@@ -49,9 +88,9 @@ Meaning:
 - `volume`: loudness multiplier for imported WAVs
 - `sf2_volume`: loudness multiplier for MIDI + SF2 conversion
 - `sf2_bank_mode`: whether to author only MIDI-used presets or the full SoundFont bank
-- `sf2_pre_eq`: optional tone shaping for imported SoundFont sample data after `44100 Hz` normalization
-- `sf2_pre_lowpass_hz`: optional manual low-pass cutoff for imported SoundFont sample data after normalization
-- `sf2_auto_lowpass`: auto low-pass non-`44100 Hz` SoundFont samples near their original bandwidth after normalization
+- `sf2_pre_eq`: optional tone shaping for imported SoundFont sample data at the preserved stored sample rate
+- `sf2_pre_lowpass_hz`: optional manual low-pass cutoff for imported SoundFont sample data before PS2 encoding
+- `sf2_auto_lowpass`: auto low-pass explicitly resampled SoundFont samples near their original bandwidth
 - `midi_program_compaction`: controls whether sparse MIDI program numbers stay sparse in the authored WD or get renumbered densely
 - `adsr`: controls whether MIDI/SF2 ADSR uses the VGMTrans-style authored path, the hybrid auto path, or template WD ADSR
 - `midi_pitch_bend_workaround`: enables or disables the current pitch bend approximation system for the MIDI/SF2 workflow
@@ -67,11 +106,16 @@ Notes:
 - `sf2_bank_mode=used` is the normal mode for MIDI-driven rebuilds
 - `sf2_bank_mode=full` is useful if you mainly want the `SF2 -> WD` conversion, including unused presets, for pairing with existing `BGM` files
 - the authored ADSR path now follows the same `PSXSPU` / `RateTable` timing model used by `VGMTrans`, so it is much closer to real KH2 export ADSR behavior than the older heuristic
+- native SoundFont sample rates are now preserved during import, and KH2 pitch is compensated through WD tuning instead of forcing early `44100 Hz` normalization
+- WD fine-tune encoding now follows the SquarePS2/VGMTrans non-linear table, so `UnityKey/FineTune` stays much closer to real KH2 tuning behavior
+- sample pitch and region tuning are now kept separate until the final WD pitch write, which keeps the authored MIDI/SF2 path closer to how `VGMTrans` carries sample vs region pitch
+- loop metadata is now also carried internally as `start + length + measure` and only converted to final PS2 loop bytes late in the authoring path
+- region tuning is now preserved more explicitly as sample pitch plus `overridingRootKey`, `coarseTune`, and `fineTune`, instead of being flattened early into one temporary authored pitch value
 - `sf2_pre_eq` is the SF2-side equivalent of the existing WAV `pre_eq`
 - `sf2_pre_lowpass_hz` is a manual override if you already know the rough bandwidth you want to keep
 - `sf2_auto_lowpass=0` is now the safer default; turn it on only if a bank really benefits from it
-- normalized looping SoundFont samples now also try to pull the loop end back to a cleaner PSX-ADPCM block boundary automatically
-- short-loop MIDI/SF2 handling was re-balanced again after a regression on `152`-style material, so loop/pitch behavior is now much closer to the good `v0.6.67` result while keeping the newer ADSR and diagnostics improvements
+- loop/sample metadata now prefers real PSX ADPCM loop markers through a generic PSX loop resolver, instead of relying only on WD region loop fields
+- short-loop MIDI/SF2 handling now stays much closer to the stable `v0.6.67` loop/pitch behavior again; the aggressive seam-search path is no longer the default
 - `midi_program_compaction=auto` keeps the current heuristic
 - `midi_program_compaction=compact` removes empty sparse WD slots and renumbers real instruments densely
 - `midi_program_compaction=preserve` keeps original-style sparse program indices and any resulting WD table gaps
@@ -100,7 +144,7 @@ pre_eq=0.35
 pre_lowpass_hz=10000
 ```
 
-Suggested starting values for noisy or “empty” upscaled SoundFont banks:
+Suggested starting values for noisy or bandwidth-mismatched SoundFont banks:
 
 ```ini
 sf2_pre_eq=0.15
@@ -299,9 +343,9 @@ Your files should be:
 
 - The MIDI/SF2 workflow is more structured than the long-note WAV workaround.
 - The current SoundFont importer converts presets, regions, key ranges, tuning, volume, pan, and loops.
-- non-`44100 Hz` SoundFont sample data is now normalized to `44100 Hz` during import before PS2 encoding
-- after that normalization, the MIDI/SF2 path can optionally apply SoundFont-side pre-conditioning with `sf2_pre_eq`, `sf2_pre_lowpass_hz`, and `sf2_auto_lowpass`
-- for normalized looping SoundFont samples, the importer now also trims the loop end back to a clean ADPCM block boundary when that can be done safely
+- native SoundFont sample rates are now preserved during import, and KH2 pitch is compensated through WD tuning instead of early `44100 Hz` normalization
+- on that preserved-rate sample data, the MIDI/SF2 path can optionally apply SoundFont-side pre-conditioning with `sf2_pre_eq`, `sf2_pre_lowpass_hz`, and `sf2_auto_lowpass`
+- WD fine-tune encoding now follows the SquarePS2/VGMTrans non-linear table, so `UnityKey/FineTune` stays much closer to real KH2 tuning behavior
 - Advanced SF2 features such as modulators, filters, and LFO behavior are currently ignored.
 - MIDI pitch-bend is currently approximated, not yet written as a true native KH2 pitch opcode.
 - The MIDI workflow now keeps the original PS2 `BGM` slot layout.
@@ -342,3 +386,4 @@ Practical fixes:
 - reduce overly dense controller data
 - reduce very dense pitch-bend automation
 - simplify the heaviest MIDI tracks first
+

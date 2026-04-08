@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.6.70`
+Version: `v0.8.0`
 
 `BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
@@ -8,6 +8,13 @@ It currently supports two workflows:
 
 - `WAV -> rebuilt PS2 musicXXX.bgm + waveXXXX.wd`
 - `MIDI + SF2 -> rebuilt PS2 musicXXX.bgm + waveXXXX.wd`
+
+It now also includes a real Windows GUI alongside the existing `config.ini` + drag-and-drop batch workflow.
+
+The GUI Tools tab is now also fully functional and includes:
+
+- a `BGM 0020xx Offset Tool` for patching program markers in a single `BGM`
+- a `Field/Battle Maker / WD Combiner` for merging a secondary `WD` into a primary one and patching the secondary `BGM` to match
 
 The new MIDI/SF2 workflow is cleaner than the legacy long-note workaround because it authors:
 
@@ -27,18 +34,31 @@ Short-loop handling on tricky MIDI/SF2 material has also been re-balanced again 
 
 The MIDI/SF2 pitch path now also keeps a single canonical `UnityKey/FineTune` representation internally, so tiny residual pitch offsets are less likely to cause unnecessary retuning on random instruments.
 
+The MIDI/SF2 import path now also preserves the original SoundFont sample rates instead of forcing everything to `44100 Hz` up front. KH2 pitch is compensated through WD tuning first, using a SquarePS2/VGMTrans-compatible fine-tune table, and PCM resampling is now reserved mainly for explicit size-guard cases.
+
+Sample pitch and region tuning are now also kept separate much longer in the MIDI/SF2 rebuild path. That keeps the final WD pitch write closer to the way `VGMTrans` carries sample pitch, region tuning, and loop metadata independently before final conversion.
+
+Loop handling now also uses a real internal `start + length + measure` descriptor instead of flattening loops immediately to KH2/WD-only loop bytes. That keeps loop/sample metadata much closer to the way `VGMTrans` carries loop state before final conversion.
+
+The region-side tuning path now also keeps explicit `overridingRootKey`, `coarseTune`, and `fineTune` components until the final WD pitch write, instead of collapsing everything early into one temporary authored pitch value.
+
 ## Included Files
 
 - `BGMInfo.exe`
 - `BGMInfo.dll`
 - `BGMInfo.deps.json`
 - `BGMInfo.runtimeconfig.json`
+- `BGMPS2ToolGUI.exe`
+- `BGMPS2ToolGUI.dll`
+- `BGMPS2ToolGUI.deps.json`
+- `BGMPS2ToolGUI.runtimeconfig.json`
 - `KhPs2Audio.Shared.dll`
 - `KhPs2Audio.Shared.deps.json`
 - `BGMReplaceWav.bat`
 - `BGMReplaceMidiSf2.bat`
 - `BGMVgmTransDiff.bat`
 - `config.ini`
+- `tracklist.txt`
 - `README.md`
 - `HOWTO.md`
 - `CHANGELOG.md`
@@ -75,6 +95,8 @@ The tool reads:
 
 from the same folder as `BGMInfo.exe`.
 
+The GUI reads and writes the same `config.ini`, so the batch workflow and the GUI stay in sync.
+
 Supported options:
 
 - `volume=...`
@@ -98,9 +120,9 @@ Notes:
 - `sf2_bank_mode` applies only to the MIDI/SF2 workflow.
   - `used` = author only presets referenced by the current MIDI
   - `full` = author the whole SoundFont bank, including presets not referenced by the current MIDI
-- `sf2_pre_eq` applies only to the MIDI/SF2 workflow. It adds the same gentle pre-conditioning curve that already exists on the WAV path, but on imported SoundFont sample data after `44100 Hz` normalization.
-- `sf2_pre_lowpass_hz` applies only to the MIDI/SF2 workflow. It is a manual low-pass override for imported SoundFont sample data after normalization. Use `0` to disable the manual override.
-- `sf2_auto_lowpass` applies only to the MIDI/SF2 workflow. When enabled, non-`44100 Hz` SoundFont samples are automatically low-passed near their original bandwidth after normalization so the rebuilt PS2 bank does not keep as much “empty” upscaled high-frequency noise. It is now an opt-in knob instead of the default.
+- `sf2_pre_eq` applies only to the MIDI/SF2 workflow. It adds the same gentle pre-conditioning curve that already exists on the WAV path, but now on imported SoundFont sample data at the preserved stored sample rate.
+- `sf2_pre_lowpass_hz` applies only to the MIDI/SF2 workflow. It is a manual low-pass override for imported SoundFont sample data before PS2 encoding. Use `0` to disable the manual override.
+- `sf2_auto_lowpass` applies only to the MIDI/SF2 workflow. When enabled, samples that are explicitly resampled are automatically low-passed near their original bandwidth so the rebuilt PS2 bank does not keep as much empty upscaled high-frequency noise. It is now an opt-in knob instead of the default.
 - `midi_program_compaction` applies only to the MIDI/SF2 workflow.
   - `auto` = keep the current heuristic
   - `compact` = remove sparse WD table gaps and renumber authored instruments densely
@@ -124,6 +146,20 @@ Optional diagnostics:
 - this command requires `vgmtrans-cli.exe` to be available next to `BGMInfo.exe`, inside a `VGMTransExportBatch` subfolder, or in a sibling `VGMTrans-v1.3` folder
 
 ## What The Tool Does
+
+## GUI Workflow
+
+The GUI is additional to the old batch flow and does not replace it.
+
+The GUI can:
+
+- point at a KH2FM BGM export root such as `_Extracted KH2FM\\export\\@KH2\\bgm`
+- resolve `musicXXX.bgm` + `waveXXXX.wd` templates by filename, even when the MIDI/SF2 or WAV lives somewhere else
+- expose all current `config.ini` options through controls
+- show track number, name, and description from the bundled `tracklist.txt`
+- play a direct `MIDI + SF2` source preview for comparison
+- play a rendered `BGM + WD` output preview for comparison
+- reserve a future tool area for the `Field/Battle maker / WD combiner / BGM 0020xx offset tool`
 
 ### WAV workflow
 
@@ -153,11 +189,15 @@ If no usable `.sf2` is found, the tool can fall back to the original `waveXXXX.w
 - The WAV workflow still expects a `16-bit PCM WAV`.
 - The MIDI/SF2 workflow expects a standard `.mid` and `.sf2`.
 - The original matching `musicXXX.bgm` and `waveXXXX.wd` must still be present next to the inputs.
+- the GUI removes that same-folder requirement when you provide a template root directory
 - The new files are written to `output`, so the original files stay untouched.
 - For compatibility, the tool keeps the original PS2 header/container identity where practical, but the authored sequence/bank data is rebuilt.
 - The current SoundFont importer ignores some advanced SF2 features such as filter/LFO/modulator behavior.
-- the SoundFont importer now normalizes non-`44100 Hz` sample data to `44100 Hz` during import, because the PS2 rebuild path behaves more consistently when the raw sample data is already on the target rate
-- the MIDI/SF2 path now also supports optional SoundFont-side pre-conditioning after that normalization:
+- the SoundFont importer now preserves native SF2 sample rates during import and compensates KH2 pitch through WD tuning instead of forcing early `44100 Hz` normalization
+- sample pitch and region tuning are now kept separate until the final WD pitch write, instead of being folded together early in the authored region build
+- loop metadata is now also carried internally as `start + length + measure` and only converted to final PS2 loop bytes late in the authoring path
+- region tuning is now preserved more explicitly as sample pitch plus `overridingRootKey`, `coarseTune`, and `fineTune`, instead of being collapsed early into one temporary authored pitch value
+- the MIDI/SF2 path now also supports optional SoundFont-side pre-conditioning on that preserved-rate sample data:
   - `sf2_pre_eq`
   - `sf2_pre_lowpass_hz`
   - `sf2_auto_lowpass`
@@ -166,7 +206,9 @@ If no usable `.sf2` is found, the tool can fall back to the original `waveXXXX.w
   - `adsr=auto`
   - `adsr=template`
 - `adsr=authored` is the current recommended default because it now follows the same PS2 ADSR timing model used by `VGMTrans`
-- normalized looping SoundFont samples now also pull the loop end back to a clean PSX-ADPCM block boundary when possible, which is intended to reduce glitchy wraparound on rebuilt short loops
+- WD fine-tune encoding now follows the SquarePS2/VGMTrans non-linear table instead of the older linear approximation, so `UnityKey/FineTune` is much closer to real KH2 tuning behavior
+- loop/sample metadata now also prefers real PSX ADPCM loop markers through a generic PSX loop resolver, instead of relying only on WD region fields
+- short looping MIDI/SF2 material now stays much closer to the stable `v0.6.67` behavior again; the tool avoids the more aggressive seam-search path that caused audible regressions on `152`-style content
 - The current MIDI importer approximates pitch-bend, but it still does not emit a fully native KH2 continuous pitch opcode.
 - if you only need a converted `WD` bank for pairing with existing `BGM` files, `sf2_bank_mode=full` is useful because it converts unused SoundFont presets too instead of authoring only the presets referenced by the current MIDI
 - if you specifically want to test the same MIDI/SF2 case without sparse WD table gaps, set `midi_program_compaction=compact`
@@ -175,6 +217,23 @@ If no usable `.sf2` is found, the tool can fall back to the original `waveXXXX.w
 - Newly authored multi-sample `WD` files now insert KH2-style 16-byte zero separators between sample chunks instead of packing all sample data directly back-to-back.
 
 ## Quick Start
+
+GUI workflow:
+
+- launch `BGMPS2ToolGUI.exe`
+- set your KH2FM template root, for example `_Extracted KH2FM\\export\\@KH2\\bgm`
+- use `Show Tracklist` to inspect the bundled `tracklist.txt` in a formatted table view
+- use `Clear Temp Preview` on the Compare tab to delete rendered preview WAVs from `%TEMP%`
+- the right-side settings area is split into separate `MIDI + SF2` and `WAV` config blocks, and each setting now has a small `i` info button with an explanation
+- use the `Tools` tab for direct `BGM` program offsetting and `WD` combining without leaving the GUI
+
+CLI additions:
+
+- `BGMInfo offsetbgm <InputBgm> <InstrumentOffset> [OutputDir]`
+- `BGMInfo combinewd <PrimaryWd> <SecondaryWd> [OutputDir] [PrimaryBgm] [SecondaryBgm]`
+- choose your `MIDI + SF2` or `WAV`
+- adjust the same settings that also live in `config.ini`
+- rebuild and use the built-in source/output preview player for comparison
 
 WAV workflow:
 
@@ -224,3 +283,5 @@ the tool will create:
 See:
 
 - `CHANGELOG.md`
+
+

@@ -1,5 +1,127 @@
 # CHANGELOG
 
+## v0.8.0 - 2026-04-08
+
+### Added
+
+- complete `BGM 0020xx Offset Tool` in the GUI Tools tab for patching program markers in a single `BGM`
+- complete `Field/Battle Maker / WD Combiner` in the GUI Tools tab for merging two `WD` banks and patching the secondary `BGM`
+- new CLI commands:
+  - `BGMInfo offsetbgm <InputBgm> <InstrumentOffset> [OutputDir]`
+  - `BGMInfo combinewd <PrimaryWd> <SecondaryWd> [OutputDir] [PrimaryBgm] [SecondaryBgm]`
+
+### Changed
+
+- the GUI Tools tab is no longer a placeholder area; both planned KH2 utility tools are now fully wired to the shared backend
+
+### Fixed
+
+- tool workflows for program-offset patching and WD combining now run through the same packaged binaries and mirrored source tree instead of existing only as planned GUI placeholders
+
+## v0.7.4 - 2026-04-08
+
+### Changed
+
+- the right-side `config.ini` area is now split into separate `MIDI + SF2 Workflow` and `WAV Workflow` setting blocks
+- every visible GUI config setting now has a small `i` button with a direct explanation dialog and hover tooltip
+
+### Fixed
+
+- GUI settings are now easier to navigate because MIDI/SF2-only and WAV-only options are no longer mixed into one long flat list
+
+## v0.7.3 - 2026-04-08
+
+### Added
+
+- new `Clear Temp Preview` button on the Compare tab to delete rendered source/output preview files from `%TEMP%`
+
+### Fixed
+
+- preview cleanup is now available directly in the GUI instead of requiring manual temp-folder cleanup after A/B listening sessions
+
+## v0.7.2 - 2026-04-08
+
+### Changed
+
+- `Show Tracklist` now renders the bundled `tracklist.txt` as a proper table using the first row as column headers instead of showing the raw tab-separated text dump
+
+### Fixed
+
+- bundled track metadata is now much easier to scan in the GUI because tab-separated columns are aligned into a real grid view
+
+## v0.7.1 - 2026-04-08
+
+### Changed
+
+- the GUI now uses a bundled `tracklist.txt` next to the package instead of the older PDF-based track list lookup
+- the track-list path picker has been replaced with a simple `Show Tracklist` button that opens the bundled text list directly
+
+### Fixed
+
+- GUI track metadata now loads from the shipped `tracklist.txt` file directly, so local track lookup no longer depends on the removed PDF import path
+- the package and `Github` mirror no longer carry the obsolete KH2 track list PDF
+
+## v0.7.0 - 2026-04-08
+
+### Added
+
+- new `BGMPS2ToolGUI.exe` Windows GUI alongside the existing batch + `config.ini` workflow
+- new GUI path settings for a KH2FM exported BGM template root and a local KH2 track list source
+- new direct source/output comparison player for `MIDI + SF2` preview vs authored `BGM + WD` preview
+- new prepared GUI area for the future `Field/Battle maker / WD combiner / BGM 0020xx offset tool`
+
+### Changed
+
+- the GUI now reads and writes the same `config.ini` keys that the batch and CLI path already use, so both workflows stay aligned
+- MIDI/SF2 and WAV rebuilds can now be driven from a template root through the GUI instead of requiring `musicXXX.bgm` + `waveXXXX.wd` next to every input file
+- the package now ships with the GUI binary set and the bundled KH2 track list source for local track lookup
+
+### Fixed
+
+- the GUI rebuild path now stages template assets in a temp workspace before calling the existing rebuilders, which keeps the old converter logic intact while removing the same-folder template requirement for GUI use
+- source preview now renders directly from `MIDI + SF2` with the current GUI/config settings instead of forcing you to compare only after a full rebuild
+
+## v0.6.73 - 2026-04-08
+
+### Changed
+
+- MIDI/SF2 loop handling now carries a real internal `start + length + measure` descriptor instead of flattening loops immediately to KH2/WD-specific loop bytes
+- sample pitch and region tuning are now split more explicitly into sample-side pitch data and region-side `overridingRootKey`, `coarseTune`, and `fineTune` components all the way to the final WD pitch write
+- PSX loop prioritizing is now handled through a more generic sample-side ADPCM loop resolver, instead of only through KH2/WD-specific loop-byte fallback behavior
+
+### Fixed
+
+- loop manifests and authored loop decisions now expose the actual loop descriptor carried through the rebuild, which makes short-loop debugging much closer to the `VGMTrans` model
+- authored MIDI/SF2 pitch diagnostics now show the separate sample and region pitch components that feed the final KH2 `UnityKey/FineTune`, which reduces guesswork when isolating retune issues
+- sample-side PSX loop markers, WD loop fields, and renderer/template fallback paths now resolve through the same loop prioritizing model, which removes more format-specific loop ambiguity
+
+## v0.6.72 - 2026-04-08
+
+### Changed
+
+- MIDI/SF2 authored samples now keep loop/sample metadata in sample space longer and only convert to final WD loop bytes at the later authoring stage
+- sample pitch and region tuning are now carried separately much longer in the MIDI/SF2 rebuild path, instead of being folded together early into a single provisional authored pitch value
+- PSX loop handling now prefers real ADPCM loop markers when available, following the same general loop-info-prioritizing idea used by `VGMTrans`
+
+### Fixed
+
+- authored WD pitch now stays closer to the `VGMTrans`/SquarePS2 model because sample-side tuning and region-side tuning remain separate until the final WD pitch write
+- loop-aware authored samples now emit explicit PSX loop-start markers, which gives the converter and diagnostics a more reliable sample-side loop source than WD region fields alone
+- template loop detection now respects sample-side PSX loop information more directly, instead of relying only on region loop bytes and playback flags
+
+## v0.6.71 - 2026-04-08
+
+### Changed
+
+- MIDI/SF2 import now preserves native SoundFont sample rates instead of forcing early 44100 Hz PCM normalization
+- KH2 pitch is now treated as tuning first: WD UnityKey/FineTune carries the sample-rate compensation, and PCM resampling is reserved mainly for explicit authored WD size-guard cases
+- WD fine-tune encode/decode now follows the SquarePS2/VGMTrans non-linear tuning table instead of the older linear approximation
+
+### Fixed
+
+- non-44100 Hz SoundFont material no longer depends as heavily on early sample-speed changes just to stay in key, which reduces the low-note pitch-jump behavior on short or sensitive samples
+- unnecessary UnityKey/FineTune rewrites are now closer to real KH2/SquarePS2 behavior because authored tuning uses the same fine-tune curve family that VGMTrans decodes
+
 ## v0.6.70 - 2026-04-07
 
 ### Changed
@@ -676,3 +798,4 @@
 
 - This release is framework-dependent and requires Microsoft `.NET 10` Runtime.
 - No external tools such as `ffmpeg`, `SCDInfo`, `MultiEncoder`, or `SingleEncoder` are required for `BGMPS2Tool`.
+

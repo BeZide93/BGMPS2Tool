@@ -1,0 +1,39 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "BGMPS2ToolGUI/1.0.0": {
+        "dependencies": {
+          "KhPs2Audio.Shared": "1.0.0"
+        },
+        "runtime": {
+          "BGMPS2ToolGUI.dll": {}
+        }
+      },
+      "KhPs2Audio.Shared/1.0.0": {
+        "runtime": {
+          "KhPs2Audio.Shared.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "BGMPS2ToolGUI/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "KhPs2Audio.Shared/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

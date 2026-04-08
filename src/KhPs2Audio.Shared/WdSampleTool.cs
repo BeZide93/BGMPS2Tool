@@ -7,6 +7,37 @@ public static class WdSampleTool
 {
     private const int RawSampleRate = 44_100;
     private const int PreviewReferenceMidiKey = 60;
+    private const double SquarePs2WdFineTuneCoeff = 0.025766555011594949755217727389848;
+    private static readonly int[] SquarePs2WdFineTuneTable =
+    [
+        0x10000, 0x1000E, 0x1001D, 0x1002C, 0x1003B, 0x10049, 0x10058, 0x10067, 0x10076, 0x10085,
+        0x10094, 0x100A2, 0x100B1, 0x100C0, 0x100CF, 0x100DE, 0x100ED, 0x100FB, 0x1010A, 0x10119,
+        0x10128, 0x10137, 0x10146, 0x10154, 0x10163, 0x10172, 0x10181, 0x10190, 0x1019F, 0x101AE,
+        0x101BD, 0x101CC, 0x101DA, 0x101E9, 0x101F8, 0x10207, 0x10216, 0x10225, 0x10234, 0x10243,
+        0x10252, 0x10261, 0x10270, 0x1027E, 0x1028D, 0x1029C, 0x102AB, 0x102BA, 0x102C9, 0x102D8,
+        0x102E7, 0x102F6, 0x10305, 0x10314, 0x10323, 0x10332, 0x10341, 0x10350, 0x1035F, 0x1036E,
+        0x1037D, 0x1038C, 0x1039B, 0x103AA, 0x103B9, 0x103C8, 0x103D7, 0x103E6, 0x103F5, 0x10404,
+        0x10413, 0x10422, 0x10431, 0x10440, 0x1044F, 0x1045E, 0x1046D, 0x1047C, 0x1048B, 0x1049A,
+        0x104A9, 0x104B8, 0x104C7, 0x104D6, 0x104E5, 0x104F5, 0x10504, 0x10513, 0x10522, 0x10531,
+        0x10540, 0x1054F, 0x1055E, 0x1056D, 0x1057C, 0x1058B, 0x1059B, 0x105AA, 0x105B9, 0x105C8,
+        0x105D7, 0x105E6, 0x105F5, 0x10604, 0x10614, 0x10623, 0x10632, 0x10641, 0x10650, 0x1065F,
+        0x1066E, 0x1067E, 0x1068D, 0x1069C, 0x106AB, 0x106BA, 0x106C9, 0x106D9, 0x106E8, 0x106F7,
+        0x10706, 0x10715, 0x10725, 0x10734, 0x10743, 0x10752, 0x10761, 0x10771, 0x10780, 0x1078F,
+        0x1079E, 0x107AE, 0x107BD, 0x107CC, 0x107DB, 0x107EA, 0x107FA, 0x10809, 0x10818, 0x10827,
+        0x10837, 0x10846, 0x10855, 0x10865, 0x10874, 0x10883, 0x10892, 0x108A2, 0x108B1, 0x108C0,
+        0x108D0, 0x108DF, 0x108EE, 0x108FD, 0x1090D, 0x1091C, 0x1092B, 0x1093B, 0x1094A, 0x10959,
+        0x10969, 0x10978, 0x10987, 0x10997, 0x109A6, 0x109B5, 0x109C5, 0x109D4, 0x109E3, 0x109F3,
+        0x10A02, 0x10A12, 0x10A21, 0x10A30, 0x10A40, 0x10A4F, 0x10A5E, 0x10A6E, 0x10A7D, 0x10A8D,
+        0x10A9C, 0x10AAB, 0x10ABB, 0x10ACA, 0x10ADA, 0x10AE9, 0x10AF8, 0x10B08, 0x10B17, 0x10B27,
+        0x10B36, 0x10B46, 0x10B55, 0x10B64, 0x10B74, 0x10B83, 0x10B93, 0x10BA2, 0x10BB2, 0x10BC1,
+        0x10BD1, 0x10BE0, 0x10BF0, 0x10BFF, 0x10C0F, 0x10C1E, 0x10C2E, 0x10C3D, 0x10C4D, 0x10C5C,
+        0x10C6C, 0x10C7B, 0x10C8B, 0x10C9A, 0x10CAA, 0x10CB9, 0x10CC9, 0x10CD8, 0x10CE8, 0x10CF7,
+        0x10D07, 0x10D16, 0x10D26, 0x10D35, 0x10D45, 0x10D55, 0x10D64, 0x10D74, 0x10D83, 0x10D93,
+        0x10DA2, 0x10DB2, 0x10DC1, 0x10DD1, 0x10DE1, 0x10DF0, 0x10E00, 0x10E0F, 0x10E1F, 0x10E2F,
+        0x10E3E, 0x10E4E, 0x10E5D, 0x10E6D, 0x10E7D, 0x10E8C, 0x10E9C, 0x10EAC, 0x10EBB, 0x10ECB,
+        0x10EDB, 0x10EEA, 0x10EFA, 0x10F09, 0x10F19, 0x10F29
+    ];
+    private static readonly int[] SquarePs2WdFineTuneCents = BuildSquarePs2WdFineTuneCents();
 
     public static string ExportForBgm(string bgmPath, TextWriter log)
     {
@@ -242,7 +273,112 @@ public static class WdSampleTool
 
     internal static int ConvertWdFineTune(byte rawFineTune)
     {
-        return (int)Math.Round((rawFineTune / 255.0 * 100.0) - 50.0, MidpointRounding.AwayFromZero);
+        return SquarePs2WdFineTuneCents[rawFineTune];
+    }
+
+    internal static byte EncodeWdFineTune(int fineTuneCents)
+    {
+        var bestIndex = 0;
+        var bestDistance = int.MaxValue;
+        for (var index = 0; index < SquarePs2WdFineTuneCents.Length; index++)
+        {
+            var distance = Math.Abs(SquarePs2WdFineTuneCents[index] - fineTuneCents);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                bestIndex = index;
+            }
+        }
+
+        return (byte)bestIndex;
+    }
+
+    internal static PsxAdpcmLoopInfo AnalyzePsxAdpcmLoopInfo(byte[] encodedBytes)
+    {
+        if (encodedBytes.Length == 0)
+        {
+            return new PsxAdpcmLoopInfo(LoopDescriptor.None, false, 0, 0, 0, 0, 0);
+        }
+
+        var blockCount = encodedBytes.Length / 0x10;
+        var loopFlagBlockCount = 0;
+        var endFlagBlockCount = 0;
+        var loopStartBlockIndex = -1;
+        byte firstBlockFlag = 0;
+        byte lastBlockFlag = 0;
+        var terminalLoopFlag = false;
+        for (var blockIndex = 0; blockIndex < blockCount; blockIndex++)
+        {
+            var flag = encodedBytes[(blockIndex * 0x10) + 1];
+            if (blockIndex == 0)
+            {
+                firstBlockFlag = flag;
+            }
+
+            lastBlockFlag = flag;
+            if ((flag & 0x02) != 0)
+            {
+                loopFlagBlockCount++;
+            }
+
+            if ((flag & 0x01) != 0)
+            {
+                endFlagBlockCount++;
+                if ((flag & 0x02) != 0)
+                {
+                    terminalLoopFlag = true;
+                }
+            }
+
+            if (loopStartBlockIndex < 0 && (flag & 0x04) != 0)
+            {
+                loopStartBlockIndex = blockIndex;
+            }
+        }
+
+        var hasLoopStartFlag = loopStartBlockIndex >= 0;
+        var loopStartBytes = hasLoopStartFlag ? loopStartBlockIndex * 0x10 : 0;
+        var looping = terminalLoopFlag || (hasLoopStartFlag && loopFlagBlockCount > 0);
+        var loopDescriptor = looping
+            ? LoopDescriptor.FromPsxAdpcmBytes(true, loopStartBytes, Math.Max(0, encodedBytes.Length - loopStartBytes))
+            : LoopDescriptor.None;
+        return new PsxAdpcmLoopInfo(
+            loopDescriptor,
+            hasLoopStartFlag,
+            loopStartBlockIndex,
+            blockCount,
+            loopFlagBlockCount,
+            firstBlockFlag,
+            lastBlockFlag);
+    }
+
+    internal static PsxAdpcmLoopInfo ResolvePreferredLoopInfo(byte[] encodedBytes, bool fallbackLooping, int fallbackLoopStartBytes)
+        => ResolvePreferredLoopInfo(
+            encodedBytes,
+            fallbackLooping
+                ? LoopDescriptor.FromPsxAdpcmBytes(true, Math.Max(0, fallbackLoopStartBytes & ~0xF), Math.Max(0, encodedBytes.Length - Math.Max(0, fallbackLoopStartBytes & ~0xF)))
+                : LoopDescriptor.None);
+
+    internal static PsxAdpcmLoopInfo ResolvePreferredLoopInfo(byte[] encodedBytes, LoopDescriptor fallbackLoopDescriptor)
+    {
+        var analyzed = AnalyzePsxAdpcmLoopInfo(encodedBytes);
+        if (analyzed.HasLoopStartFlag)
+        {
+            return analyzed;
+        }
+
+        if (!fallbackLoopDescriptor.Looping)
+        {
+            return analyzed;
+        }
+
+        var normalizedFallback = PsxAdpcmLoopMath.NormalizeToPsxAdpcmBytes(
+            fallbackLoopDescriptor,
+            Math.Max(0, (encodedBytes.Length / 0x10) * 28));
+        return analyzed with
+        {
+            LoopDescriptor = normalizedFallback,
+        };
     }
 
     internal static float ConvertWdPan(byte rawPan)
@@ -269,6 +405,17 @@ public static class WdSampleTool
 
         return 0.5f;
     }
+
+    private static int[] BuildSquarePs2WdFineTuneCents()
+    {
+        var values = new int[SquarePs2WdFineTuneTable.Length];
+        for (var index = 0; index < SquarePs2WdFineTuneTable.Length; index++)
+        {
+            values[index] = (int)Math.Ceiling(((SquarePs2WdFineTuneTable[index] - 0x10000) * SquarePs2WdFineTuneCoeff) - 50.0);
+        }
+
+        return values;
+    }
 }
 
 public sealed record WdSampleManifest(
@@ -277,6 +424,22 @@ public sealed record WdSampleManifest(
     int BankId,
     string ExportMode,
     List<WdSampleManifestEntry> Samples);
+
+internal sealed record PsxAdpcmLoopInfo(
+    LoopDescriptor LoopDescriptor,
+    bool HasLoopStartFlag,
+    int LoopStartBlockIndex,
+    int BlockCount,
+    int LoopFlagBlockCount,
+    byte FirstBlockFlag,
+    byte LastBlockFlag)
+{
+    public bool Looping => LoopDescriptor.Looping;
+
+    public int LoopStartBytes => LoopDescriptor.StartMeasure == LoopMeasure.Bytes
+        ? LoopDescriptor.Start
+        : PsxAdpcmLoopMath.SamplesToBytes(LoopDescriptor.ResolveStartSamples(Math.Max(0, BlockCount * 28)));
+}
 
 public sealed record WdSampleManifestEntry(
     int Index,
@@ -405,7 +568,7 @@ internal sealed class WdBankFile
             var rawBytes = new byte[sampleLength];
             Buffer.BlockCopy(data, absoluteOffset, rawBytes, 0, sampleLength);
             var decoded = PsxAdpcmDecoder.Decode(rawBytes);
-            var sample = new WdSampleEntry(index, relativeOffset, rawBytes, decoded.Pcm);
+            var sample = new WdSampleEntry(index, relativeOffset, rawBytes, decoded.Pcm, WdSampleTool.AnalyzePsxAdpcmLoopInfo(rawBytes));
             samples.Add(sample);
             sampleMap.Add(relativeOffset, sample);
         }
@@ -444,14 +607,8 @@ internal sealed class WdBankFile
                 var loopStartBytes = region.LoopStartBytes;
                 if (sample.ReplacementBytes is not null)
                 {
-                    if (sample.ReplacementLoopStartBytes.HasValue)
-                    {
-                        loopStartBytes = sample.ReplacementLoopStartBytes.Value;
-                    }
-
-                    var maxLoopStart = Math.Max(0, sample.ReplacementBytes.Length - 0x10);
-                    loopStartBytes = Math.Min(loopStartBytes & ~0xF, maxLoopStart);
-                    loopStartBytes = WdLayoutHelpers.OffsetLoopStartForStoredChunk(loopStartBytes > 0, loopStartBytes);
+                    var replacementLoopInfo = sample.GetEffectiveLoopInfo(loopStartBytes);
+                    loopStartBytes = WdLayoutHelpers.OffsetLoopStartForStoredChunk(replacementLoopInfo.Looping, replacementLoopInfo.LoopStartBytes);
                 }
 
                 BinaryHelpers.WriteUInt32LE(output, region.FileOffset + 0x8, (uint)loopStartBytes);
@@ -509,28 +666,32 @@ internal static class WdLayoutHelpers
 
 internal sealed class WdSampleEntry
 {
-    public WdSampleEntry(int index, int relativeOffset, byte[] rawBytes, float[] pcm)
+    public WdSampleEntry(int index, int relativeOffset, byte[] rawBytes, float[] pcm, PsxAdpcmLoopInfo rawLoopInfo)
     {
         Index = index;
         RelativeOffset = relativeOffset;
         RawBytes = rawBytes;
         Pcm = pcm;
+        RawLoopInfo = rawLoopInfo;
     }
 
     public int Index { get; }
     public int RelativeOffset { get; }
     public byte[] RawBytes { get; }
     public float[] Pcm { get; }
-    public bool Looping => Regions.Any(region => region.LoopStartBytes > 0) || ReplacementLoopStartBytes.GetValueOrDefault() > 0;
+    public PsxAdpcmLoopInfo RawLoopInfo { get; }
+    public bool Looping => GetEffectiveLoopInfo().Looping;
     public List<WdRegionEntry> Regions { get; } = new();
     public byte[]? ReplacementBytes { get; private set; }
     public int? ReplacementLoopStartBytes { get; private set; }
+    public PsxAdpcmLoopInfo? ReplacementLoopInfo { get; private set; }
     public int NewRelativeOffset { get; set; }
 
     public void SetReplacement(byte[] replacementBytes, int? replacementLoopStartBytes = null)
     {
         ReplacementBytes = replacementBytes;
         ReplacementLoopStartBytes = replacementLoopStartBytes;
+        ReplacementLoopInfo = WdSampleTool.AnalyzePsxAdpcmLoopInfo(replacementBytes);
     }
 
     public byte[] GetOutputBytes()
@@ -540,7 +701,13 @@ internal sealed class WdSampleEntry
 
     public int GetSuggestedLoopStartBytes()
     {
-        return Regions.Where(region => region.LoopStartBytes > 0).Select(region => region.LoopStartBytes).DefaultIfEmpty(0).Min();
+        var psxLoopInfo = GetEffectiveLoopInfo();
+        if (psxLoopInfo.HasLoopStartFlag)
+        {
+            return psxLoopInfo.LoopStartBytes;
+        }
+
+        return Regions.Where(region => region.LoopStartBytes > 0).Select(region => region.LoopStartBytes).DefaultIfEmpty(ReplacementLoopStartBytes.GetValueOrDefault()).Min();
     }
 
     public WdRegionEntry? GetPrimaryRegion()
@@ -549,6 +716,32 @@ internal sealed class WdSampleEntry
             .OrderByDescending(region => region.KeyHigh - region.KeyLow)
             .ThenBy(region => region.RegionIndex)
             .FirstOrDefault();
+    }
+
+    public PsxAdpcmLoopInfo GetEffectiveLoopInfo(int fallbackLoopStartBytes = 0)
+        => GetEffectiveLoopInfo(
+            fallbackLoopStartBytes > 0
+                ? LoopDescriptor.FromPsxAdpcmBytes(true, fallbackLoopStartBytes, Math.Max(0, GetOutputBytes().Length - fallbackLoopStartBytes))
+                : LoopDescriptor.None);
+
+    public PsxAdpcmLoopInfo GetEffectiveLoopInfo(LoopDescriptor fallbackLoopDescriptor)
+    {
+        if (ReplacementBytes is not null)
+        {
+            return WdSampleTool.ResolvePreferredLoopInfo(
+                ReplacementBytes,
+                ReplacementLoopStartBytes.GetValueOrDefault() > 0
+                    ? LoopDescriptor.FromPsxAdpcmBytes(true, ReplacementLoopStartBytes ?? 0, Math.Max(0, ReplacementBytes.Length - (ReplacementLoopStartBytes ?? 0)))
+                    : PsxAdpcmLoopMath.NormalizeToPsxAdpcmBytes(fallbackLoopDescriptor, Math.Max(0, (ReplacementBytes.Length / 0x10) * 28)));
+        }
+
+        var regionFallbackLoopStart = fallbackLoopDescriptor.Looping
+            ? PsxAdpcmLoopMath.NormalizeToPsxAdpcmBytes(fallbackLoopDescriptor, Math.Max(0, (RawBytes.Length / 0x10) * 28)).Start
+            : Regions.Where(region => region.LoopStartBytes > 0).Select(region => region.LoopStartBytes).DefaultIfEmpty(0).Min();
+        var effectiveFallbackLoop = regionFallbackLoopStart > 0
+            ? LoopDescriptor.FromPsxAdpcmBytes(true, regionFallbackLoopStart, Math.Max(0, RawBytes.Length - regionFallbackLoopStart))
+            : LoopDescriptor.None;
+        return WdSampleTool.ResolvePreferredLoopInfo(RawBytes, effectiveFallbackLoop);
     }
 }
 
@@ -631,11 +824,19 @@ internal static class PsxAdpcmEncoder
     private const double LookaheadWeight = 0.6;
 
     public static byte[] Encode(short[] pcmSamples, bool looping, int loopStartBytes)
+        => Encode(
+            pcmSamples,
+            looping
+                ? LoopDescriptor.FromPsxAdpcmBytes(true, loopStartBytes, Math.Max(0, PsxAdpcmLoopMath.SamplesToBytes(pcmSamples.Length) - loopStartBytes))
+                : LoopDescriptor.None);
+
+    public static byte[] Encode(short[] pcmSamples, LoopDescriptor loopDescriptor)
     {
         var blockCount = Math.Max(1, (pcmSamples.Length + 27) / 28);
         var output = new byte[blockCount * 0x10];
-        var loopStartBlock = looping
-            ? Math.Clamp(loopStartBytes / 0x10, 0, Math.Max(0, blockCount - 1))
+        var normalizedLoop = PsxAdpcmLoopMath.NormalizeToPsxAdpcmBytes(loopDescriptor, pcmSamples.Length);
+        var loopStartBlock = normalizedLoop.Looping
+            ? Math.Clamp(normalizedLoop.Start / 0x10, 0, Math.Max(0, blockCount - 1))
             : 0;
         var previous1 = 0;
         var previous2 = 0;
@@ -646,7 +847,7 @@ internal static class PsxAdpcmEncoder
         {
             LoadBlock(pcmSamples, blockIndex, source);
 
-            var hasNextBlock = blockIndex + 1 < blockCount || (looping && blockCount > 1);
+            var hasNextBlock = blockIndex + 1 < blockCount || (normalizedLoop.Looping && blockCount > 1);
             if (hasNextBlock)
             {
                 var nextBlockIndex = blockIndex + 1 < blockCount
@@ -664,7 +865,12 @@ internal static class PsxAdpcmEncoder
 
             var outputOffset = blockIndex * 0x10;
             output[outputOffset] = (byte)((block.Filter << 4) | block.Shift);
-            var flag = looping ? 0x2 : 0x0;
+            var flag = normalizedLoop.Looping ? 0x2 : 0x0;
+            if (normalizedLoop.Looping && blockIndex == loopStartBlock)
+            {
+                flag |= 0x4;
+            }
+
             if (blockIndex == blockCount - 1)
             {
                 flag |= 0x1;

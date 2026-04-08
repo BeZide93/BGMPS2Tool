@@ -637,7 +637,6 @@ public static class BgmNativeRenderer
             var pcm = new float[blockCount * 28];
             var previous1 = 0;
             var previous2 = 0;
-            var loopFlag = false;
 
             for (var blockIndex = 0; blockIndex < blockCount; blockIndex++)
             {
@@ -645,14 +644,17 @@ public static class BgmNativeRenderer
                 var filterRange = data[blockOffset];
                 var flag = data[blockOffset + 1];
                 DecodeBlock(data.AsSpan(blockOffset + 2, 14), filterRange, ref previous1, ref previous2, pcm.AsSpan(blockIndex * 28, 28));
-                if ((flag & 0x2) != 0)
-                {
-                    loopFlag = true;
-                }
             }
 
-            var loopStartSample = Math.Clamp((regionLoopStartBytes / 0x10) * 28, 0, pcm.Length > 0 ? pcm.Length - 1 : 0);
-            var looping = loopFlag && regionLoopStartBytes > 0 && pcm.Length > 1;
+            var sampleBytes = new byte[sampleLengthBytes];
+            Buffer.BlockCopy(data, sampleAbsoluteOffset, sampleBytes, 0, sampleLengthBytes);
+            var loopInfo = WdSampleTool.ResolvePreferredLoopInfo(
+                sampleBytes,
+                regionLoopStartBytes > 0
+                    ? LoopDescriptor.FromPsxAdpcmBytes(true, regionLoopStartBytes, Math.Max(0, sampleBytes.Length - regionLoopStartBytes))
+                    : LoopDescriptor.None);
+            var loopStartSample = Math.Clamp((loopInfo.LoopStartBytes / 0x10) * 28, 0, pcm.Length > 0 ? pcm.Length - 1 : 0);
+            var looping = loopInfo.Looping && loopStartSample > 0 && pcm.Length > 1;
             return new DecodedSample(pcm, looping, loopStartSample, pcm.Length);
         }
 
@@ -704,7 +706,7 @@ public static class BgmNativeRenderer
 
         private static int ConvertWdFineTune(byte rawFineTune)
         {
-            return (int)Math.Round((rawFineTune / 255.0 * 100.0) - 50.0, MidpointRounding.AwayFromZero);
+            return WdSampleTool.ConvertWdFineTune(rawFineTune);
         }
 
         private static float ConvertWdPan(byte rawPan)
