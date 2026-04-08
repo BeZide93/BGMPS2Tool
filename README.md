@@ -2,6 +2,12 @@
 
 Version: `v0.8.6`
 
+<picture>
+ <source media="(prefers-color-scheme: dark)" srcset="https://github.com/BeZide93/BGMPS2Tool/blob/main/Icon.png">
+ <source media="(prefers-color-scheme: light)" srcset="https://github.com/BeZide93/BGMPS2Tool/blob/main/Icon.png">
+ <img alt="YOUR-ALT-TEXT" src="https://github.com/BeZide93/BGMPS2Tool/blob/main/Icon.png">
+</picture>
+
 `BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
 It currently supports two workflows:
