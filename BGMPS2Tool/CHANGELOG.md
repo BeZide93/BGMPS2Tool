@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## v0.8.6 - 2026-04-08
+
+### Added
+
+- the packaged GUI executable now uses the bundled `BGMPS2Tool.ico` as its application icon
+
+### Fixed
+
+- `BGMPS2ToolGUI.exe` now carries the custom project icon in Explorer, the taskbar, and the main window instead of the default executable icon
+
 ## v0.8.5 - 2026-04-08
 
 ### Added

@@ -20,9 +20,26 @@ internal sealed partial class MainForm : Form
     public MainForm()
     {
         InitializeComponent();
+        ApplyWindowIcon();
         _logWriter = new UiTextWriter(_logTextBox);
         HookEvents();
         LoadState();
+    }
+
+    private void ApplyWindowIcon()
+    {
+        try
+        {
+            using var appIcon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            if (appIcon is not null)
+            {
+                Icon = (System.Drawing.Icon)appIcon.Clone();
+            }
+        }
+        catch
+        {
+            // Keep the default icon if the executable icon cannot be extracted.
+        }
     }
 
     private void HookEvents()

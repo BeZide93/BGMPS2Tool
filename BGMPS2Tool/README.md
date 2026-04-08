@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.8.5`
+Version: `v0.8.6`
 
 `BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
@@ -60,6 +60,7 @@ The region-side tuning path now also keeps explicit `overridingRootKey`, `coarse
 - `BGMReplaceWav.bat`
 - `BGMReplaceMidiSf2.bat`
 - `BGMVgmTransDiff.bat`
+- `BGMPS2Tool.ico`
 - `config.ini`
 - `tracklist.txt`
 - `README.md`

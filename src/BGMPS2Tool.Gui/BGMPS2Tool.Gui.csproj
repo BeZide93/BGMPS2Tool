@@ -8,6 +8,7 @@
     <RootNamespace>BGMPS2Tool.Gui</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <ApplicationIcon>BGMPS2Tool.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
