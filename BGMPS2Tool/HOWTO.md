@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.8.0`
+Version: `v0.8.5`
 
 ## Goal
 
@@ -43,6 +43,10 @@ _Extracted KH2FM\export\@KH2\bgm
 10. use the `Tools` tab for:
    - `BGM 0020xx Offset Tool`
    - `Field/Battle Maker / WD Combiner`
+11. use the `Advanced` tab if you want to load a `.wd` directly and tweak either:
+   - global per-instrument pitch, Hz retuning, loop offset, loop mode, volume, pan, or raw `ADSR1/ADSR2`
+   - or finer per-region overrides underneath each instrument
+12. use the `README` button on the `Advanced` tab if you want the built-in English notes about how the global instrument layer and the local region layer interact
 
 CLI equivalents:
 

@@ -27,6 +27,7 @@ internal sealed partial class MainForm : Form
 
     private void HookEvents()
     {
+        HookAdvancedEvents();
         _reloadConfigButton.Click += (_, _) => LoadConfigIntoControls();
         _saveConfigButton.Click += (_, _) => SaveConfigFromControls();
         _saveGuiSettingsButton.Click += (_, _) => SaveGuiSettingsFromControls();
@@ -367,6 +368,8 @@ internal sealed partial class MainForm : Form
         _playOutputButton.Enabled = enabled;
         _runOffsetToolButton.Enabled = enabled;
         _runWdCombinerButton.Enabled = enabled;
+        _advancedLoadWdButton.Enabled = enabled;
+        _advancedSaveWdButton.Enabled = enabled;
     }
 
     private void AfterRebuild(string outputDirectory, string sourcePath)

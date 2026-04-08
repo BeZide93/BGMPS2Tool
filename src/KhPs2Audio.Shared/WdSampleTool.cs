@@ -276,6 +276,39 @@ public static class WdSampleTool
         return SquarePs2WdFineTuneCents[rawFineTune];
     }
 
+    internal static (int RootKey, int FineTuneCents) CanonicalizeWdRootNote(double rootNote)
+    {
+        var rootKey = (int)Math.Round(rootNote, MidpointRounding.AwayFromZero);
+        var fineTuneCents = (int)Math.Round((rootNote - rootKey) * 100.0, MidpointRounding.AwayFromZero);
+
+        while (fineTuneCents > 50)
+        {
+            rootKey++;
+            fineTuneCents -= 100;
+        }
+
+        while (fineTuneCents < -50)
+        {
+            rootKey--;
+            fineTuneCents += 100;
+        }
+
+        return (rootKey, fineTuneCents);
+    }
+
+    internal static double ComposeWdRootNote(int rootKey, int fineTuneCents)
+        => rootKey + (fineTuneCents / 100.0);
+
+    internal static (byte RawFineTune, byte RawUnityKey, int RootKey, int FineTuneCents) EncodeWdRootNote(double rootNote)
+    {
+        var canonicalPitch = CanonicalizeWdRootNote(rootNote);
+        return (
+            EncodeWdFineTune(canonicalPitch.FineTuneCents),
+            unchecked((byte)(0x3A - canonicalPitch.RootKey)),
+            canonicalPitch.RootKey,
+            canonicalPitch.FineTuneCents);
+    }
+
     internal static byte EncodeWdFineTune(int fineTuneCents)
     {
         var bestIndex = 0;
@@ -404,6 +437,17 @@ public static class WdSampleTool
         }
 
         return 0.5f;
+    }
+
+    internal static byte EncodeWdPan(float pan)
+    {
+        var clamped = Math.Clamp(pan, -1f, 1f);
+        if (clamped < 0f)
+        {
+            return (byte)Math.Clamp((int)Math.Round(0xC0 + (clamped * 0x40), MidpointRounding.AwayFromZero), 0x80, 0xC0);
+        }
+
+        return (byte)Math.Clamp((int)Math.Round(0xC0 + (clamped * 0x3F), MidpointRounding.AwayFromZero), 0xC0, 0xFF);
     }
 
     private static int[] BuildSquarePs2WdFineTuneCents()

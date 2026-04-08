@@ -64,6 +64,7 @@ internal sealed partial class MainForm
         tabs.TabPages.Add((TabPage)BuildRebuildTab());
         tabs.TabPages.Add((TabPage)BuildCompareTab());
         tabs.TabPages.Add((TabPage)BuildToolsTab());
+        tabs.TabPages.Add((TabPage)BuildAdvancedTab());
 
         var root = new TableLayoutPanel
         {

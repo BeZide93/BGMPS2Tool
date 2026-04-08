@@ -1,5 +1,54 @@
 # CHANGELOG
 
+## v0.8.5 - 2026-04-08
+
+### Added
+
+- the `Advanced` tab now supports a two-stage workflow: global instrument edits plus optional per-region overrides under each instrument
+- per-region controls now exist for pitch, fine-tune, Hz retune helper, loop offset, loop mode, volume, pan, and raw `ADSR1/ADSR2`
+
+### Changed
+
+- advanced WD saves now merge global instrument edits first and then apply local region overrides on top
+- the built-in `Advanced` README text now documents the new global-vs-region editing model and the remaining sample-level loop caveats
+
+## v0.8.4 - 2026-04-08
+
+### Fixed
+
+- the `Advanced` tab `README` window is now formatted as a readable help view with headings, bullet points, and a close button instead of a dense raw text block
+
+## v0.8.3 - 2026-04-08
+
+### Added
+
+- new `README` button on the `Advanced` tab with built-in English notes about per-instrument editing behavior, shared-sample loop caveats, and raw ADSR risks
+
+## v0.8.2 - 2026-04-08
+
+### Fixed
+
+- the new `Advanced` tab now renders instrument editor cards correctly instead of collapsing into thin line artifacts on load
+- advanced instrument controls now use a stable scrollable vertical stack layout, so loaded WD instruments are visible and expandable in the GUI
+
+## v0.8.1 - 2026-04-08
+
+### Added
+
+- new `Advanced` GUI tab for loading a `.wd` directly and listing every instrument slot as an expandable editor card
+- per-instrument advanced WD controls for pitch/semitone offset, fine-tune cent offset, Hz retuning, loop offset, loop mode forcing, volume trim, pan shift, and raw `ADSR1/ADSR2` overrides
+- new shared `WdAdvancedTooling` backend for loading WD instrument summaries and writing edited WD outputs safely
+
+### Changed
+
+- the GUI now includes a real WD-level advanced editing workflow in addition to rebuild, compare, and KH2 utility tools
+- advanced loop edits now rewrite both region loop fields and sample-side PSX ADPCM loop markers so loop adjustments stay coherent
+
+### Fixed
+
+- advanced WD pitch edits now use the same SquarePS2-style `UnityKey/FineTune` encoding path as the main rebuild logic instead of a separate ad-hoc editor path
+- expert loop retuning no longer has to be done manually in a hex editor when a user only wants to shift loop starts or force one-shot vs looping behavior
+
 ## v0.8.0 - 2026-04-08
 
 ### Added

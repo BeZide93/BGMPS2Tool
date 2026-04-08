@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.8.0`
+Version: `v0.8.5`
 
 `BGMPS2Tool` is a Windows tool package for rebuilding `Kingdom Hearts II Final Mix` PS2 music tracks.
 
@@ -15,6 +15,9 @@ The GUI Tools tab is now also fully functional and includes:
 
 - a `BGM 0020xx Offset Tool` for patching program markers in a single `BGM`
 - a `Field/Battle Maker / WD Combiner` for merging a secondary `WD` into a primary one and patching the secondary `BGM` to match
+
+The GUI now also includes an `Advanced` tab for loading a `.wd` directly and applying both instrument-level expert edits and optional per-region overrides such as pitch/semitone shifts, Hz retuning, loop offsets, loop mode forcing, volume trim, pan shift, and raw `ADSR1/ADSR2` overrides.
+It also now includes a small `README` button on that tab with workflow notes and safety caveats for advanced WD editing.
 
 The new MIDI/SF2 workflow is cleaner than the legacy long-note workaround because it authors:
 
@@ -159,7 +162,8 @@ The GUI can:
 - show track number, name, and description from the bundled `tracklist.txt`
 - play a direct `MIDI + SF2` source preview for comparison
 - play a rendered `BGM + WD` output preview for comparison
-- reserve a future tool area for the `Field/Battle maker / WD combiner / BGM 0020xx offset tool`
+- use the `Tools` tab for the `BGM 0020xx Offset Tool` and `Field/Battle Maker / WD Combiner`
+- use the `Advanced` tab to inspect a `WD` bank instrument-by-instrument, then optionally drill down into individual regions for finer per-split edits without manual hex editing
 
 ### WAV workflow
 
@@ -226,6 +230,7 @@ GUI workflow:
 - use `Clear Temp Preview` on the Compare tab to delete rendered preview WAVs from `%TEMP%`
 - the right-side settings area is split into separate `MIDI + SF2` and `WAV` config blocks, and each setting now has a small `i` info button with an explanation
 - use the `Tools` tab for direct `BGM` program offsetting and `WD` combining without leaving the GUI
+- use the `Advanced` tab when you want a direct `.wd` instrument editor with per-instrument pitch, Hz, loop, pan, volume, and raw ADSR controls
 
 CLI additions:
 
