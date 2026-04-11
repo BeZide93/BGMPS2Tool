@@ -37,6 +37,8 @@ public static class BgmMidiSf2Rebuilder
     private const int SpuMaxLevel = 0x7FFF;
     private const int PsxEnvelopeMaxLevel = 0x7FFFFFFF;
     private const int MaxEnvelopeSearchSamples = SpuSampleRate * 120;
+    private const int GeneralMidiPercussionChannel = 9;
+    private const int GeneralMidiPercussionBank = 128;
     private const int ShortLoopAlignmentThresholdSamples = 512;
     private const int PitchVariantStepCents = 25;
     private const int PitchVariantMaxResidualCents = 50;
@@ -529,6 +531,11 @@ public static class BgmMidiSf2Rebuilder
     {
         var warnings = new HashSet<string>(soundFont.Warnings, StringComparer.Ordinal);
         var usedPresetRefs = GetUsedPresetRefs(midi);
+        if (UsesImplicitGeneralMidiPercussionBank(midi))
+        {
+            warnings.Add("MIDI channel 10 percussion convention detected: channel 10 bank 0/program notes are resolved through SoundFont percussion bank 128 when available.");
+        }
+
         var pitchVariantPresetRefs = enablePitchBendWorkaround ? GetPitchBendPresetRefs(midi) : [];
         var programMap = new Dictionary<PresetRef, ProgramMapping>();
         var authoredSamples = new Dictionary<string, AuthoredSample>(StringComparer.Ordinal);
@@ -716,6 +723,8 @@ public static class BgmMidiSf2Rebuilder
                     region.RootKey,
                     region.FineTuneCents,
                     region.SampleRate,
+                    region.InitialFilterFcCents,
+                    region.InitialFilterCutoffHz,
                     region.AttackSeconds,
                     region.HoldSeconds,
                     region.DecaySeconds,
@@ -1009,7 +1018,7 @@ public static class BgmMidiSf2Rebuilder
                         currentProgram = programChange.Program;
                         break;
                     case MidiNoteOnEvent:
-                        used.Add(new PresetRef(GetBankNumber(bankMsb, bankLsb), currentProgram));
+                        used.Add(GetEffectivePresetRef(sourceTrack.Channel, bankMsb, bankLsb, currentProgram));
                         break;
                 }
             }
@@ -1041,7 +1050,7 @@ public static class BgmMidiSf2Rebuilder
                         currentProgram = programChange.Program;
                         break;
                     case MidiNoteOnEvent noteOn:
-                        var presetRef = new PresetRef(GetBankNumber(bankMsb, bankLsb), currentProgram);
+                        var presetRef = GetEffectivePresetRef(sourceTrack.Channel, bankMsb, bankLsb, currentProgram);
                         if (!velocities.TryGetValue(presetRef, out var samples))
                         {
                             samples = [];
@@ -1098,13 +1107,43 @@ public static class BgmMidiSf2Rebuilder
                         currentProgram = programChange.Program;
                         break;
                     case MidiNoteOnEvent:
-                        used.Add(new PresetRef(GetBankNumber(bankMsb, bankLsb), currentProgram));
+                        used.Add(GetEffectivePresetRef(sourceTrack.Channel, bankMsb, bankLsb, currentProgram));
                         break;
                 }
             }
         }
 
         return used;
+    }
+
+    private static bool UsesImplicitGeneralMidiPercussionBank(MidiFile midi)
+    {
+        foreach (var sourceTrack in GetSourceTrackGroups(midi))
+        {
+            if (sourceTrack.Channel != GeneralMidiPercussionChannel)
+            {
+                continue;
+            }
+
+            var bankMsb = 0;
+            var bankLsb = 0;
+            foreach (var evt in sourceTrack.Events)
+            {
+                switch (evt)
+                {
+                    case MidiControlChangeEvent control when control.Controller == 0:
+                        bankMsb = control.Value;
+                        break;
+                    case MidiControlChangeEvent control when control.Controller == 32:
+                        bankLsb = control.Value;
+                        break;
+                    case MidiNoteOnEvent when GetBankNumber(bankMsb, bankLsb) == 0:
+                        return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static int AllocateInstrumentIndex(PresetRef presetRef, HashSet<int> usedInstrumentIndices)
@@ -1308,7 +1347,9 @@ public static class BgmMidiSf2Rebuilder
             left.VelocityLow != right.VelocityLow ||
             left.VelocityHigh != right.VelocityHigh ||
             left.SamplePitch != right.SamplePitch ||
-            left.RegionPitch != right.RegionPitch)
+            left.RegionPitch != right.RegionPitch ||
+            left.InitialFilterFcCents != right.InitialFilterFcCents ||
+            Math.Abs(left.InitialFilterCutoffHz - right.InitialFilterCutoffHz) >= 0.001)
         {
             return false;
         }
@@ -1395,23 +1436,27 @@ public static class BgmMidiSf2Rebuilder
             return preset;
         }
 
-        if (presetRef.Bank == 128)
+        var midiMsbPreset = soundFont.FindPresetByMidiMsbBank(presetRef.Bank, presetRef.Program);
+        if (midiMsbPreset is not null)
+        {
+            warnings.Add($"MIDI bank {presetRef.Bank}, program {presetRef.Program} resolved to SoundFont bank {midiMsbPreset.Bank}/{midiMsbPreset.Program} ({midiMsbPreset.Name}) via direct CC0/MSB-style bank mapping.");
+            return midiMsbPreset;
+        }
+
+        preset = soundFont.FindPresetExactOrCoarse(presetRef.Bank, presetRef.Program);
+        if (preset is not null)
+        {
+            return preset;
+        }
+
+        if (IsPercussionBank(presetRef.Bank))
         {
             warnings.Add($"No SoundFont preset found for percussion bank {presetRef.Bank}, program {presetRef.Program}. Falling back to percussion bank 128 if possible.");
-            preset = soundFont.FindPreset(128, 0);
-            if (preset is not null)
+            var percussionFallback = soundFont.FindPercussionFallbackPreset(presetRef.Program);
+            if (percussionFallback is not null)
             {
-                return preset;
-            }
-
-            var nearestPercussion = soundFont.Presets
-                .Where(static candidate => candidate.Bank == 128)
-                .OrderBy(candidate => Math.Abs(candidate.Program - presetRef.Program))
-                .ThenBy(static candidate => candidate.Program)
-                .FirstOrDefault();
-            if (nearestPercussion is not null)
-            {
-                return nearestPercussion;
+                warnings.Add($"Percussion preset {presetRef.Bank}/{presetRef.Program} resolved to SoundFont preset {percussionFallback.Bank}/{percussionFallback.Program} ({percussionFallback.Name}).");
+                return percussionFallback;
             }
         }
 
@@ -1425,6 +1470,11 @@ public static class BgmMidiSf2Rebuilder
         warnings.Add($"Skipping missing SoundFont preset bank {presetRef.Bank}, program {presetRef.Program}.");
         missingPresetRefs.Add(presetRef);
         return null;
+    }
+
+    private static bool IsPercussionBank(int bank)
+    {
+        return bank == 128 || (bank & ~0x7F) == 128;
     }
 
     private static List<(int Channel, string Name, List<MidiEvent> Events)> GetSourceTrackGroups(MidiFile midi)
@@ -1524,7 +1574,7 @@ public static class BgmMidiSf2Rebuilder
                         break;
                     case MidiProgramChangeEvent programChange:
                         currentProgram = programChange.Program;
-                        if (TryResolveProgramMapping(programMap, bankMsb, bankLsb, currentProgram, out var mappedProgram))
+                        if (TryResolveProgramMapping(programMap, channel, bankMsb, bankLsb, currentProgram, out var mappedProgram))
                         {
                             if (emittedProgram != mappedProgram.InstrumentIndex)
                             {
@@ -1609,7 +1659,7 @@ public static class BgmMidiSf2Rebuilder
                             activeNotes.Remove(deferred);
                         }
 
-                        if (TryResolveProgramMapping(programMap, bankMsb, bankLsb, currentProgram, out var noteProgram))
+                        if (TryResolveProgramMapping(programMap, channel, bankMsb, bankLsb, currentProgram, out var noteProgram))
                         {
                             var pitchTarget = ResolvePitchTarget(noteOn.Key, enablePitchBendWorkaround ? currentPitchBend : 0, bendRangeSemitones, noteProgram);
                             if (emittedProgram != pitchTarget.Program)
@@ -1635,7 +1685,7 @@ public static class BgmMidiSf2Rebuilder
                             break;
                         }
 
-                        if (!TryResolveProgramMapping(programMap, bankMsb, bankLsb, currentProgram, out var bendProgram))
+                        if (!TryResolveProgramMapping(programMap, channel, bankMsb, bankLsb, currentProgram, out var bendProgram))
                         {
                             break;
                         }
@@ -1716,8 +1766,8 @@ public static class BgmMidiSf2Rebuilder
     {
         return evt switch
         {
-            MidiProgramChangeEvent => 0,
-            MidiControlChangeEvent control when control.Controller is 0 or 32 => 1,
+            MidiControlChangeEvent control when control.Controller is 0 or 32 => 0,
+            MidiProgramChangeEvent => 1,
             MidiControlChangeEvent => 2,
             MidiNoteOffEvent => 3,
             MidiNoteOnEvent => 4,
@@ -1803,15 +1853,23 @@ public static class BgmMidiSf2Rebuilder
 
     private static bool TryResolveProgramMapping(
         IReadOnlyDictionary<PresetRef, ProgramMapping> programMap,
+        int channel,
         int bankMsb,
         int bankLsb,
         int program,
         out ProgramMapping mappedProgram)
     {
-        var exact = new PresetRef(GetBankNumber(bankMsb, bankLsb), program);
+        var exact = GetEffectivePresetRef(channel, bankMsb, bankLsb, program);
         if (programMap.TryGetValue(exact, out var exactMapping))
         {
             mappedProgram = exactMapping;
+            return true;
+        }
+
+        var raw = new PresetRef(GetBankNumber(bankMsb, bankLsb), program);
+        if (raw != exact && programMap.TryGetValue(raw, out var rawMapping))
+        {
+            mappedProgram = rawMapping;
             return true;
         }
 
@@ -1833,9 +1891,22 @@ public static class BgmMidiSf2Rebuilder
         return false;
     }
 
+    private static PresetRef GetEffectivePresetRef(int channel, int bankMsb, int bankLsb, int program)
+    {
+        var bank = GetBankNumber(bankMsb, bankLsb);
+        return ShouldUseGeneralMidiPercussionBank(channel, bank)
+            ? new PresetRef(GeneralMidiPercussionBank, program)
+            : new PresetRef(bank, program);
+    }
+
     private static int GetBankNumber(int bankMsb, int bankLsb)
     {
         return (bankMsb << 7) | bankLsb;
+    }
+
+    private static bool ShouldUseGeneralMidiPercussionBank(int channel, int bank)
+    {
+        return channel == GeneralMidiPercussionChannel && bank == 0;
     }
 
     private static byte[] BuildWd(string originalWdPath, int bankId, ConversionPlan plan, TextWriter log)
@@ -2278,6 +2349,8 @@ public static class BgmMidiSf2Rebuilder
                             region.SourceInfo.SourceRootKey,
                             region.SourceInfo.SourceFineTuneCents,
                             region.SourceInfo.SourceSampleRate,
+                            region.SourceInfo.InitialFilterFcCents,
+                            region.SourceInfo.InitialFilterCutoffHz,
                             region.SourceInfo.AttackSeconds,
                             region.SourceInfo.HoldSeconds,
                             region.SourceInfo.DecaySeconds,
@@ -3855,6 +3928,8 @@ internal sealed record AuthoredRegionSourceInfo(
     int SourceRootKey,
     int SourceFineTuneCents,
     int SourceSampleRate,
+    int? InitialFilterFcCents,
+    double InitialFilterCutoffHz,
     double AttackSeconds,
     double HoldSeconds,
     double DecaySeconds,
@@ -4034,6 +4109,8 @@ internal sealed record MidiSf2AuthoredRegionSourceManifest(
     int SourceRootKey,
     int SourceFineTuneCents,
     int SourceSampleRate,
+    int? InitialFilterFcCents,
+    double InitialFilterCutoffHz,
     double AttackSeconds,
     double HoldSeconds,
     double DecaySeconds,

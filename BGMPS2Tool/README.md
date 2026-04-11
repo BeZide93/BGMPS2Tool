@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.8.9`
+Version: `v0.9.2`
 
 <picture>
  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/BeZide93/BGMPS2Tool/blob/main/Icon.png">
@@ -71,6 +71,24 @@ The `v0.8.9` rebuild path adds a safer Polyphone-facing SF2 audit layer:
 - `pmod` and `imod` modulator chunks are now parsed for manifest/debug inspection, but dynamic modulation is still not converted into WD playback
 - each authored MIDI/SF2 manifest region now includes `Source.SoundFontDebug` with raw/resolved generators, `shdr` sample/loop header values, resolved sample/loop offsets, and parsed modulator records
 - ignored SoundFont generator warnings now include readable generator names, so missing filter/LFO/mod-envelope behavior is much easier to identify during Polyphone comparisons
+
+The `v0.9.0` rebuild path improves MIDI/SF2 bank compatibility for SoundFonts that store CC0/MSB variants as direct SF2 banks:
+
+- exact SoundFont bank/program matches are still preferred first
+- if a combined MIDI bank such as `128` was produced from `CC0=1, CC32=0`, the importer can now try direct SF2 bank `1` before falling back to percussion or bank `0`
+- conversion and preview now share the same preset fallback order, preventing cases where `128/56` was incorrectly authored as drums or bank-0 program `56` instead of a valid `1/56` SF2 preset
+
+The `v0.9.1` rebuild path adds Polyphone/VLC-nearer static SF2 tone handling:
+
+- `initialFilterFc` is now imported with SoundFont preset/instrument merge behavior and converted from absolute cents to Hz
+- static per-region low-pass filters are baked into the PCM before PSX ADPCM encoding, so WD output keeps darker/filtered SF2 regions instead of exporting every sample bright/raw
+- authored sample identity and manifest output include the filter bake parameters, allowing the same source sample to be duplicated only when two regions really need different tone
+
+The `v0.9.2` rebuild path fixes GM drum-channel handling:
+
+- MIDI channel 10, internally `channel == 9`, now resolves bank-0 program notes through SoundFont percussion bank `128` when available
+- this keeps GM-style drum parts such as `128/0` key `39` clap from being authored as melodic `0/0 Piano`
+- MIDI/SF2 source preview and WD authoring now use the same percussion preset decision
 
 ## Included Files
 
@@ -227,7 +245,7 @@ If no usable `.sf2` is found, the tool can fall back to the original `waveXXXX.w
 - the GUI removes that same-folder requirement when you provide a template root directory
 - The new files are written to `output`, so the original files stay untouched.
 - For compatibility, the tool keeps the original PS2 header/container identity where practical, but the authored sequence/bank data is rebuilt.
-- The current SoundFont importer ignores some advanced SF2 features such as filter/LFO/modulator behavior.
+- The current SoundFont importer still ignores advanced dynamic SF2 features such as LFO-driven filters, modulators, and filter Q/resonance.
 - the SoundFont importer now preserves native SF2 sample rates during import and compensates KH2 pitch through WD tuning instead of forcing early `44100 Hz` normalization
 - sample pitch and region tuning are now kept separate until the final WD pitch write, instead of being folded together early in the authored region build
 - loop metadata is now also carried internally as `start + length + measure` and only converted to final PS2 loop bytes late in the authoring path

@@ -10,6 +10,8 @@ public static class MidiSf2PreviewRenderer
     private const float SilenceThreshold = 0.0001f;
     private const float HardPeakLimit = 0.98f;
     private const int DefaultPitchBendRangeSemitones = 2;
+    private const int GeneralMidiPercussionChannel = 9;
+    private const int GeneralMidiPercussionBank = 128;
 
     public static string RenderToWave(string midiPath, string soundFontPath, string outputPath, BgmToolConfig config, TextWriter log)
     {
@@ -220,15 +222,13 @@ public static class MidiSf2PreviewRenderer
                     return;
                 }
 
-                var preset = soundFont.FindPreset(state.Bank, state.Program)
-                    ?? soundFont.FindPreset(state.BankMsb << 7, state.Program)
-                    ?? soundFont.FindPreset(0, state.Program);
+                var preset = ResolvePresetForPreview(soundFont, evt.Channel, state.Bank, state.Program);
                 if (preset is null)
                 {
                     WarnOnce(
                         warningCache,
                         log,
-                        $"preset:{state.Bank}:{state.Program}",
+                        $"preset:{evt.Channel}:{state.Bank}:{state.Program}",
                         $"Skipping source preview note on channel {evt.Channel}: preset bank {state.Bank}, program {state.Program} is missing in the SoundFont.");
                     return;
                 }
@@ -557,6 +557,44 @@ public static class MidiSf2PreviewRenderer
         }
 
         return Math.Max(1, fallbackLength);
+    }
+
+    private static SoundFontPreset? ResolvePresetForPreview(SoundFontFile soundFont, int channel, int bank, int program)
+    {
+        if (ShouldUseGeneralMidiPercussionBank(channel, bank))
+        {
+            var percussionPreset = soundFont.FindPreset(GeneralMidiPercussionBank, program)
+                ?? soundFont.FindPercussionFallbackPreset(program);
+            if (percussionPreset is not null)
+            {
+                return percussionPreset;
+            }
+        }
+
+        var preset = soundFont.FindPreset(bank, program)
+            ?? soundFont.FindPresetByMidiMsbBank(bank, program)
+            ?? soundFont.FindPresetExactOrCoarse(bank, program);
+        if (preset is not null)
+        {
+            return preset;
+        }
+
+        if (IsPercussionBank(bank))
+        {
+            return soundFont.FindPercussionFallbackPreset(program);
+        }
+
+        return soundFont.FindPreset(0, program);
+    }
+
+    private static bool ShouldUseGeneralMidiPercussionBank(int channel, int bank)
+    {
+        return channel == GeneralMidiPercussionChannel && bank == 0;
+    }
+
+    private static bool IsPercussionBank(int bank)
+    {
+        return bank == 128 || (bank & ~0x7F) == 128;
     }
 
     private static void WarnOnce(HashSet<string> warningCache, TextWriter log, string key, string message)

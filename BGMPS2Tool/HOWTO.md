@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.8.9`
+Version: `v0.9.2`
 
 ## Goal
 
@@ -120,6 +120,10 @@ Notes:
 - SoundFont generator IDs now follow the Polyphone/SF2 mapping for the key/loop edge case: `46=keynum`, `47=velocity`, and `50=endloopAddrsCoarseOffset`
 - MIDI/SF2 manifests now include `Source.SoundFontDebug` for Polyphone-style auditing of raw/resolved generators, `shdr` sample and loop headers, resolved loop offsets, and parsed `pmod`/`imod` records
 - parsed `pmod`/`imod` records are debug/audit-only for now; live SF2 dynamic modulation is intentionally not written into WD playback yet
+- MIDI/SF2 bank resolution now tries exact SF2 bank/program first, then a direct CC0/MSB-style bank fallback such as combined MIDI bank `128` -> SF2 bank `1`, and only then percussion or bank-0 fallback
+- this keeps SF2 bank variants such as `1/56` from being mistaken for missing percussion or bank-0 instruments during WD authoring
+- MIDI channel 10 (`channel == 9` internally) now follows the General MIDI percussion convention and resolves bank-0 notes through SoundFont bank `128` when available
+- static SoundFont `initialFilterFc` is now resolved per region and baked into PCM before PSX ADPCM encoding; the same source sample is duplicated only when different filter cutoffs need different tone
 - WD fine-tune encoding now follows the SquarePS2/VGMTrans non-linear table, so `UnityKey/FineTune` stays much closer to real KH2 tuning behavior
 - sample pitch and region tuning are now kept separate until the final WD pitch write, which keeps the authored MIDI/SF2 path closer to how `VGMTrans` carries sample vs region pitch
 - loop metadata is now also carried internally as `start + length + measure` and only converted to final PS2 loop bytes late in the authoring path
@@ -355,12 +359,13 @@ Your files should be:
 ## Compatibility Notes
 
 - The MIDI/SF2 workflow is more structured than the long-note WAV workaround.
+- GM-style drum tracks on MIDI channel 10 use SoundFont percussion bank `128` when that kit exists, instead of being treated as melodic bank `0`.
 - The current SoundFont importer converts presets, regions, key ranges, tuning, volume, pan, and loops.
 - native SoundFont sample rates are now preserved during import, and KH2 pitch is compensated through WD tuning instead of early `44100 Hz` normalization
 - looped SF2 samples keep their full sample header range internally, while KH2/PSX output still stores looping samples bounded to the effective loop end because PSX ADPCM has no separate SF2-style loop-end flag
 - on that preserved-rate sample data, the MIDI/SF2 path can optionally apply SoundFont-side pre-conditioning with `sf2_pre_eq`, `sf2_pre_lowpass_hz`, and `sf2_auto_lowpass`
 - WD fine-tune encoding now follows the SquarePS2/VGMTrans non-linear table, so `UnityKey/FineTune` stays much closer to real KH2 tuning behavior
-- Advanced SF2 dynamic behavior such as modulators, filters, and LFOs is not converted into WD playback yet, but raw generators and `pmod`/`imod` records are now exposed in the manifest for Polyphone-style comparison.
+- Static SF2 `initialFilterFc` is baked into the authored samples, but advanced dynamic SF2 behavior such as modulators, LFO-driven filters, and filter Q/resonance is not converted into WD playback yet.
 - MIDI pitch-bend is currently approximated, not yet written as a true native KH2 pitch opcode.
 - The MIDI workflow now keeps the original PS2 `BGM` slot layout.
 - Hard safety caps currently are:

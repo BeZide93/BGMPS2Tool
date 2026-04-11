@@ -1,5 +1,39 @@
 # CHANGELOG
 
+## v0.9.2 - 2026-04-11
+
+### Fixed
+
+- MIDI/SF2 conversion now applies the General MIDI channel-10 percussion convention: internal MIDI `channel == 9` with bank `0` resolves through SoundFont percussion bank `128` when available
+- fixed drum/clap parts from GM-style MIDIs being authored as normal bank-0 melodic instruments such as `0/0 Piano` instead of the intended `128/0` drum kit
+- same-tick MIDI bank-select events are now processed before program-change events during authoring, matching the expected bank-before-program MIDI setup order
+- MIDI/SF2 source preview now uses the same channel-10 percussion preset resolution as WD authoring
+
+## v0.9.1 - 2026-04-11
+
+### Added
+
+- SoundFont `initialFilterFc` is now imported with Polyphone-style preset/instrument merge behavior and converted from absolute cents to a per-region low-pass cutoff
+- static SF2 low-pass tone is now baked into the region PCM before PSX ADPCM encoding, so filtered/darker SoundFont regions survive the `SF2 -> WD` authoring path more closely
+- MIDI/SF2 manifests now expose `InitialFilterFcCents` and `InitialFilterCutoffHz` in each authored region source block
+
+### Changed
+
+- authored sample identity now includes the baked filter parameters when an SF2 region actually changes the PCM tone, so one source sample is duplicated only when different regions require different filter cutoffs
+
+## v0.9.0 - 2026-04-11
+
+### Changed
+
+- MIDI/SF2 preset resolution now separates exact SoundFont preset lookup from fallback lookup, so a missing high-bank preset can no longer silently resolve to the same program on bank `0`
+- MIDI/SF2 conversion and preview now try a direct CC0/MSB-style SoundFont bank fallback before percussion fallback; for example MIDI bank `128` from `CC0=1, CC32=0` can resolve to SF2 bank `1` when that preset exists
+- percussion fallback remains available for true missing percussion presets, but no longer masks valid SF2 bank-variant presets such as `1/56`
+
+### Fixed
+
+- fixed cases where `128/56`-style MIDI bank/program combinations were incorrectly authored as `128/0 Drums` or `0/56` instead of the matching SF2 bank-variant instrument
+- fixed preview/authoring mismatch around bank fallback resolution so the GUI/source preview and rebuilt WD/BGM path use the same SoundFont preset decision order
+
 ## v0.8.9 - 2026-04-11
 
 ### Added

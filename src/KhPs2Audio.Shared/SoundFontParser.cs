@@ -5,6 +5,9 @@ internal static class SoundFontParser
     private const int DefaultReferenceSampleRate = 44_100;
     private const ushort RightSampleType = 2;
     private const ushort LeftSampleType = 4;
+    private const int DefaultInitialFilterFcCents = 13_500;
+    private const int MinInitialFilterFcCents = 1_500;
+    private const int MaxInitialFilterFcCents = 13_500;
 
     public static SoundFontFile Parse(string path, SoundFontImportOptions? importOptions = null)
     {
@@ -493,6 +496,8 @@ internal static class SoundFontParser
         }
 
         monoSlice = PrepareSampleSliceForKh2PitchCompensation(monoSlice, sample, sampleHeaders, playbackSampleRate, importOptions, warnings);
+        var initialFilter = ResolveInitialFilterBake(values.InitialFilterFcCents, monoSlice.SampleRate);
+        monoSlice = ApplyInitialFilterBake(monoSlice, initialFilter, warnings);
         var debug = CreateRegionDebug(sample, values, monoSlice, modulators);
 
         var samplePitch = new SamplePitchComponents(
@@ -544,6 +549,8 @@ internal static class SoundFontParser
             decaySeconds,
             sustainLevel,
             releaseSeconds,
+            initialFilter.Cents,
+            initialFilter.Applies ? initialFilter.CutoffHz : 0.0,
             monoSlice.SampleRate,
             monoSlice.LoopDescriptor,
             monoSlice.Pcm,
@@ -681,6 +688,50 @@ internal static class SoundFontParser
         }
 
         return AudioDsp.ApplyPreEncodeConditioning(pcm, referenceSampleRate, importOptions.PreEqStrength, effectiveLowPassHz);
+    }
+
+    private static InitialFilterBake ResolveInitialFilterBake(int? initialFilterFcCents, int sampleRate)
+    {
+        if (!initialFilterFcCents.HasValue || sampleRate <= 80)
+        {
+            return new InitialFilterBake(initialFilterFcCents, 0.0, false);
+        }
+
+        var cents = Math.Clamp(initialFilterFcCents.Value, MinInitialFilterFcCents, MaxInitialFilterFcCents);
+        var cutoffHz = 8.176 * Math.Pow(2.0, cents / 1200.0);
+        var maxUsefulCutoffHz = (sampleRate * 0.5) - 20.0;
+        if (maxUsefulCutoffHz <= 20.0 ||
+            cents >= DefaultInitialFilterFcCents ||
+            cutoffHz >= maxUsefulCutoffHz)
+        {
+            return new InitialFilterBake(cents, cutoffHz, false);
+        }
+
+        return new InitialFilterBake(cents, Math.Clamp(cutoffHz, 20.0, maxUsefulCutoffHz), true);
+    }
+
+    private static ExtractedSampleSlice ApplyInitialFilterBake(
+        ExtractedSampleSlice slice,
+        InitialFilterBake initialFilter,
+        HashSet<string> warnings)
+    {
+        if (!initialFilter.Applies)
+        {
+            return slice;
+        }
+
+        warnings.Add("SoundFont initialFilterFc is baked into region PCM before PSX ADPCM encoding for closer Polyphone/VLC tone.");
+
+        var suffix = $"|ifc={initialFilter.Cents.GetValueOrDefault()}|lp={(int)Math.Round(initialFilter.CutoffHz, MidpointRounding.AwayFromZero)}";
+        return slice with
+        {
+            IdentityKey = slice.IdentityKey + suffix,
+            SecondaryIdentityKey = slice.SecondaryIdentityKey is null ? null : slice.SecondaryIdentityKey + suffix,
+            Pcm = AudioDsp.ApplyLowPassFilter(slice.Pcm, slice.SampleRate, initialFilter.CutoffHz),
+            SecondaryPcm = slice.SecondaryPcm is null
+                ? null
+                : AudioDsp.ApplyLowPassFilter(slice.SecondaryPcm, slice.SecondarySampleRate ?? slice.SampleRate, initialFilter.CutoffHz),
+        };
     }
 
     private static double GetAutoLowPassHz(int sourceSampleRate, int referenceSampleRate, bool autoLowPassEnabled)
@@ -1042,6 +1093,8 @@ internal static class SoundFontParser
             left.VelocityHigh != right.VelocityHigh ||
             left.SamplePitch != right.SamplePitch ||
             left.RegionPitch != right.RegionPitch ||
+            left.InitialFilterFcCents != right.InitialFilterFcCents ||
+            Math.Abs(left.InitialFilterCutoffHz - right.InitialFilterCutoffHz) >= 0.001 ||
             left.LoopDescriptor != right.LoopDescriptor)
         {
             return false;
@@ -1204,6 +1257,7 @@ internal static class SoundFontParser
         private int? _velocityLow;
         private int? _velocityHigh;
         private int? _initialAttenuationCentibels;
+        private int? _initialFilterFcCents;
         private int? _panTenthsPercent;
         private int? _reverbEffectsSendTenthsPercent;
         private int? _coarseTuneSemitones;
@@ -1228,6 +1282,7 @@ internal static class SoundFontParser
         public int VelocityHigh => _velocityHigh ?? 127;
         public int? SampleId { get; private set; }
         public int InitialAttenuationCentibels => _initialAttenuationCentibels ?? 0;
+        public int? InitialFilterFcCents => _initialFilterFcCents;
         public int PanTenthsPercent => _panTenthsPercent ?? 0;
         public int ReverbEffectsSendTenthsPercent => _reverbEffectsSendTenthsPercent ?? 0;
         public int CoarseTuneSemitones => _coarseTuneSemitones ?? 0;
@@ -1265,6 +1320,9 @@ internal static class SoundFontParser
                     break;
                 case 4:
                     Add(ref _startAddrsCoarseOffset, signedAmount);
+                    break;
+                case 8:
+                    _initialFilterFcCents = signedAmount;
                     break;
                 case 12:
                     Add(ref _endAddrsCoarseOffset, signedAmount);
@@ -1365,6 +1423,7 @@ internal static class SoundFontParser
                 OverrideIfSet(ref merged._keynum, localValues._keynum);
                 OverrideIfSet(ref merged._fixedVelocity, localValues._fixedVelocity);
                 OverrideIfSet(ref merged._initialAttenuationCentibels, localValues._initialAttenuationCentibels);
+                OverrideIfSet(ref merged._initialFilterFcCents, localValues._initialFilterFcCents);
                 OverrideIfSet(ref merged._panTenthsPercent, localValues._panTenthsPercent);
                 OverrideIfSet(ref merged._reverbEffectsSendTenthsPercent, localValues._reverbEffectsSendTenthsPercent);
                 OverrideIfSet(ref merged._coarseTuneSemitones, localValues._coarseTuneSemitones);
@@ -1409,6 +1468,15 @@ internal static class SoundFontParser
                 merged._keynum = instrumentValues._keynum ?? presetValues?._keynum;
                 merged._fixedVelocity = instrumentValues._fixedVelocity ?? presetValues?._fixedVelocity;
                 merged._initialAttenuationCentibels = (presetValues?.InitialAttenuationCentibels ?? 0) + instrumentValues.InitialAttenuationCentibels;
+                if (instrumentValues._initialFilterFcCents.HasValue || presetValues?._initialFilterFcCents.HasValue == true)
+                {
+                    merged._initialFilterFcCents = Math.Clamp(
+                        (instrumentValues._initialFilterFcCents ?? DefaultInitialFilterFcCents) +
+                        (presetValues?._initialFilterFcCents ?? 0),
+                        MinInitialFilterFcCents,
+                        MaxInitialFilterFcCents);
+                }
+
                 merged._panTenthsPercent = (presetValues?.PanTenthsPercent ?? 0) + instrumentValues.PanTenthsPercent;
                 merged._reverbEffectsSendTenthsPercent = (presetValues?.ReverbEffectsSendTenthsPercent ?? 0) + instrumentValues.ReverbEffectsSendTenthsPercent;
                 merged._coarseTuneSemitones = (presetValues?.CoarseTuneSemitones ?? 0) + instrumentValues.CoarseTuneSemitones;
@@ -1429,6 +1497,13 @@ internal static class SoundFontParser
                 merged._sampleModes = presetValues?._sampleModes ?? 0;
                 merged._keynum = presetValues?._keynum;
                 merged._fixedVelocity = presetValues?._fixedVelocity;
+                if (presetValues?._initialFilterFcCents.HasValue == true)
+                {
+                    merged._initialFilterFcCents = Math.Clamp(
+                        DefaultInitialFilterFcCents + presetValues._initialFilterFcCents.Value,
+                        MinInitialFilterFcCents,
+                        MaxInitialFilterFcCents);
+                }
             }
 
             merged.AttackVolEnvTimecents = (instrumentValues?.AttackVolEnvTimecents ?? -12000) + (presetValues?.AttackVolEnvTimecents ?? 0);
@@ -1458,6 +1533,7 @@ internal static class SoundFontParser
             destination._velocityHigh = source._velocityHigh;
             destination.SampleId = source.SampleId;
             destination._initialAttenuationCentibels = source._initialAttenuationCentibels;
+            destination._initialFilterFcCents = source._initialFilterFcCents;
             destination._panTenthsPercent = source._panTenthsPercent;
             destination._reverbEffectsSendTenthsPercent = source._reverbEffectsSendTenthsPercent;
             destination._coarseTuneSemitones = source._coarseTuneSemitones;
@@ -1511,6 +1587,7 @@ internal static class SoundFontParser
             AddDebug(output, 46, _keynum, "audit-only");
             AddDebug(output, 47, _fixedVelocity, "audit-only");
             AddDebug(output, 48, _initialAttenuationCentibels, "centibels");
+            AddDebug(output, 8, _initialFilterFcCents, "absolute cents");
             AddDebug(output, 16, _reverbEffectsSendTenthsPercent, "0.1%");
             AddDebug(output, 17, _panTenthsPercent, "0.1%");
             AddDebug(output, 51, _coarseTuneSemitones, "semitones");
@@ -1601,6 +1678,8 @@ internal static class SoundFontParser
         int SampleLink,
         int SampleType);
 
+    private readonly record struct InitialFilterBake(int? Cents, double CutoffHz, bool Applies);
+
     private sealed record ExtractedSampleSlice(
         string IdentityKey,
         string SourceSampleName,
@@ -1629,9 +1708,45 @@ internal sealed record SoundFontFile(
 {
     public SoundFontPreset? FindPreset(int bank, int program)
     {
-        return Presets.FirstOrDefault(preset => preset.Bank == bank && preset.Program == program)
-            ?? Presets.FirstOrDefault(preset => preset.Bank == (bank & ~0x7F) && preset.Program == program)
-            ?? Presets.FirstOrDefault(preset => preset.Bank == 0 && preset.Program == program);
+        return Presets.FirstOrDefault(preset => preset.Bank == bank && preset.Program == program);
+    }
+
+    public SoundFontPreset? FindPresetExactOrCoarse(int bank, int program)
+    {
+        var exact = FindPreset(bank, program);
+        if (exact is not null)
+        {
+            return exact;
+        }
+
+        var coarseBank = bank & ~0x7F;
+        return coarseBank != bank ? FindPreset(coarseBank, program) : null;
+    }
+
+    public SoundFontPreset? FindPresetByMidiMsbBank(int bank, int program)
+    {
+        if (bank <= 0)
+        {
+            return null;
+        }
+
+        var msbBank = bank >> 7;
+        if (msbBank <= 0 || msbBank == bank)
+        {
+            return null;
+        }
+
+        return FindPreset(msbBank, program);
+    }
+
+    public SoundFontPreset? FindPercussionFallbackPreset(int requestedProgram)
+    {
+        return FindPreset(128, 0)
+            ?? Presets
+                .Where(static preset => preset.Bank == 128)
+                .OrderBy(preset => Math.Abs(preset.Program - requestedProgram))
+                .ThenBy(static preset => preset.Program)
+                .FirstOrDefault();
     }
 }
 
@@ -1707,6 +1822,8 @@ internal sealed record SoundFontRegion(
     double DecaySeconds,
     float SustainLevel,
     double ReleaseSeconds,
+    int? InitialFilterFcCents,
+    double InitialFilterCutoffHz,
     int SampleRate,
     LoopDescriptor LoopDescriptor,
     short[] Pcm,

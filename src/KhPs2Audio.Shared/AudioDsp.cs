@@ -26,6 +26,16 @@ internal static class AudioDsp
         return output;
     }
 
+    public static short[] ApplyLowPassFilter(short[] input, int sampleRate, double cutoffHz)
+    {
+        if (input.Length == 0)
+        {
+            return [];
+        }
+
+        return ApplyLowPass(input, sampleRate, cutoffHz);
+    }
+
     public static short[] MixToMono(short[] left, short[] right, int sampleRate)
     {
         var length = Math.Min(left.Length, right.Length);
