@@ -567,8 +567,8 @@ public static class BgmNativeRenderer
                     var isLast = (firstLastFlags & 0x2) != 0;
                     var sampleOffset = checked((int)(BinaryHelpers.ReadUInt32LE(data, regionOffset + 0x4) & 0xFFFFFFF0));
                     var loopStartBytes = checked((int)BinaryHelpers.ReadUInt32LE(data, regionOffset + 0x8));
-                    var adsr1 = BinaryHelpers.ReadUInt16LE(data, regionOffset + 0x0E);
-                    var adsr2 = BinaryHelpers.ReadUInt16LE(data, regionOffset + 0x10);
+            var adsr1 = BinaryHelpers.ReadUInt16LE(data, regionOffset + 0x0C);
+            var adsr2 = BinaryHelpers.ReadUInt16LE(data, regionOffset + 0x0E);
                     var unityKey = 0x3A - BinaryHelpers.ReadSByte(data, regionOffset + 0x13);
                     var keyHigh = data[regionOffset + 0x14];
                     var velocityHigh = data[regionOffset + 0x15];

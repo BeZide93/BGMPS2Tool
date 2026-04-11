@@ -21,7 +21,7 @@ public static class BgmMidiSf2Rebuilder
     private const double DefaultSf2PreLowPassHz = 0.0;
     private const bool DefaultSf2AutoLowPass = false;
     private const bool DefaultMidiPitchBendWorkaround = true;
-    private const MidiProgramCompactionMode DefaultMidiProgramCompaction = MidiProgramCompactionMode.Compact;
+    private const MidiProgramCompactionMode DefaultMidiProgramCompaction = MidiProgramCompactionMode.Preserve;
     private const MidiSf2AdsrMode DefaultMidiSf2AdsrMode = MidiSf2AdsrMode.Authored;
     private const ushort DefaultPpqn = 48;
     private const int MaxAuthoredWdBytes = 980 * 1024;
@@ -724,7 +724,8 @@ public static class BgmMidiSf2Rebuilder
                     region.LoopDescriptor,
                     regionWasDownmixed,
                     isStereo,
-                    loopPolicy.LoopDescriptor);
+                    loopPolicy.LoopDescriptor,
+                    region.Debug);
                 var provisionalRegion = new AuthoredRegion(
                     authoredSample,
                     region.KeyLow,
@@ -988,37 +989,29 @@ public static class BgmMidiSf2Rebuilder
     private static HashSet<PresetRef> GetUsedPresetRefs(MidiFile midi)
     {
         var used = new HashSet<PresetRef>();
-        var bankMsb = new int[16];
-        var bankLsb = new int[16];
-        var currentProgram = new int[16];
-
-        var orderedEvents = midi.Tracks
-            .SelectMany(static track => track.Events)
-            .OrderBy(static evt => evt.Tick)
-            .ThenBy(static evt => evt.Order)
-            .ToList();
-
-        foreach (var evt in orderedEvents)
+        foreach (var sourceTrack in GetSourceTrackGroups(midi))
         {
-            if (evt.Channel is < 0 or > 15)
-            {
-                continue;
-            }
+            var bankMsb = 0;
+            var bankLsb = 0;
+            var currentProgram = 0;
 
-            switch (evt)
+            foreach (var evt in sourceTrack.Events)
             {
-                case MidiControlChangeEvent control when control.Controller == 0:
-                    bankMsb[control.Channel] = control.Value;
-                    break;
-                case MidiControlChangeEvent control when control.Controller == 32:
-                    bankLsb[control.Channel] = control.Value;
-                    break;
-                case MidiProgramChangeEvent programChange:
-                    currentProgram[programChange.Channel] = programChange.Program;
-                    break;
-                case MidiNoteOnEvent noteOn:
-                    used.Add(new PresetRef(GetBankNumber(bankMsb[noteOn.Channel], bankLsb[noteOn.Channel]), currentProgram[noteOn.Channel]));
-                    break;
+                switch (evt)
+                {
+                    case MidiControlChangeEvent control when control.Controller == 0:
+                        bankMsb = control.Value;
+                        break;
+                    case MidiControlChangeEvent control when control.Controller == 32:
+                        bankLsb = control.Value;
+                        break;
+                    case MidiProgramChangeEvent programChange:
+                        currentProgram = programChange.Program;
+                        break;
+                    case MidiNoteOnEvent:
+                        used.Add(new PresetRef(GetBankNumber(bankMsb, bankLsb), currentProgram));
+                        break;
+                }
             }
         }
 
@@ -1028,44 +1021,36 @@ public static class BgmMidiSf2Rebuilder
     private static Dictionary<PresetRef, int> GetPreferredVelocities(MidiFile midi)
     {
         var velocities = new Dictionary<PresetRef, List<int>>();
-        var bankMsb = new int[16];
-        var bankLsb = new int[16];
-        var currentProgram = new int[16];
-
-        var orderedEvents = midi.Tracks
-            .SelectMany(static track => track.Events)
-            .OrderBy(static evt => evt.Tick)
-            .ThenBy(static evt => evt.Order)
-            .ToList();
-
-        foreach (var evt in orderedEvents)
+        foreach (var sourceTrack in GetSourceTrackGroups(midi))
         {
-            if (evt.Channel is < 0 or > 15)
-            {
-                continue;
-            }
+            var bankMsb = 0;
+            var bankLsb = 0;
+            var currentProgram = 0;
 
-            switch (evt)
+            foreach (var evt in sourceTrack.Events)
             {
-                case MidiControlChangeEvent control when control.Controller == 0:
-                    bankMsb[control.Channel] = control.Value;
-                    break;
-                case MidiControlChangeEvent control when control.Controller == 32:
-                    bankLsb[control.Channel] = control.Value;
-                    break;
-                case MidiProgramChangeEvent programChange:
-                    currentProgram[programChange.Channel] = programChange.Program;
-                    break;
-                case MidiNoteOnEvent noteOn:
-                    var presetRef = new PresetRef(GetBankNumber(bankMsb[noteOn.Channel], bankLsb[noteOn.Channel]), currentProgram[noteOn.Channel]);
-                    if (!velocities.TryGetValue(presetRef, out var samples))
-                    {
-                        samples = [];
-                        velocities.Add(presetRef, samples);
-                    }
+                switch (evt)
+                {
+                    case MidiControlChangeEvent control when control.Controller == 0:
+                        bankMsb = control.Value;
+                        break;
+                    case MidiControlChangeEvent control when control.Controller == 32:
+                        bankLsb = control.Value;
+                        break;
+                    case MidiProgramChangeEvent programChange:
+                        currentProgram = programChange.Program;
+                        break;
+                    case MidiNoteOnEvent noteOn:
+                        var presetRef = new PresetRef(GetBankNumber(bankMsb, bankLsb), currentProgram);
+                        if (!velocities.TryGetValue(presetRef, out var samples))
+                        {
+                            samples = [];
+                            velocities.Add(presetRef, samples);
+                        }
 
-                    samples.Add(noteOn.Velocity);
-                    break;
+                        samples.Add(noteOn.Velocity);
+                        break;
+                }
             }
         }
 
@@ -1087,49 +1072,35 @@ public static class BgmMidiSf2Rebuilder
 
     private static HashSet<PresetRef> GetPitchBendPresetRefs(MidiFile midi)
     {
-        var pitchBendChannels = midi.Tracks
-            .SelectMany(static track => track.Events)
-            .OfType<MidiPitchBendEvent>()
-            .Select(static evt => evt.Channel)
-            .Where(static channel => channel is >= 0 and < 16)
-            .ToHashSet();
-        if (pitchBendChannels.Count == 0)
-        {
-            return [];
-        }
-
         var used = new HashSet<PresetRef>();
-        var bankMsb = new int[16];
-        var bankLsb = new int[16];
-        var currentProgram = new int[16];
-
-        var orderedEvents = midi.Tracks
-            .SelectMany(static track => track.Events)
-            .OrderBy(static evt => evt.Tick)
-            .ThenBy(static evt => evt.Order)
-            .ToList();
-
-        foreach (var evt in orderedEvents)
+        foreach (var sourceTrack in GetSourceTrackGroups(midi))
         {
-            if (evt.Channel is < 0 or > 15)
+            if (!sourceTrack.Events.OfType<MidiPitchBendEvent>().Any())
             {
                 continue;
             }
 
-            switch (evt)
+            var bankMsb = 0;
+            var bankLsb = 0;
+            var currentProgram = 0;
+
+            foreach (var evt in sourceTrack.Events)
             {
-                case MidiControlChangeEvent control when control.Controller == 0:
-                    bankMsb[control.Channel] = control.Value;
-                    break;
-                case MidiControlChangeEvent control when control.Controller == 32:
-                    bankLsb[control.Channel] = control.Value;
-                    break;
-                case MidiProgramChangeEvent programChange:
-                    currentProgram[programChange.Channel] = programChange.Program;
-                    break;
-                case MidiNoteOnEvent noteOn when pitchBendChannels.Contains(noteOn.Channel):
-                    used.Add(new PresetRef(GetBankNumber(bankMsb[noteOn.Channel], bankLsb[noteOn.Channel]), currentProgram[noteOn.Channel]));
-                    break;
+                switch (evt)
+                {
+                    case MidiControlChangeEvent control when control.Controller == 0:
+                        bankMsb = control.Value;
+                        break;
+                    case MidiControlChangeEvent control when control.Controller == 32:
+                        bankLsb = control.Value;
+                        break;
+                    case MidiProgramChangeEvent programChange:
+                        currentProgram = programChange.Program;
+                        break;
+                    case MidiNoteOnEvent:
+                        used.Add(new PresetRef(GetBankNumber(bankMsb, bankLsb), currentProgram));
+                        break;
+                }
             }
         }
 
@@ -1229,7 +1200,7 @@ public static class BgmMidiSf2Rebuilder
                 if (region.Looping && region.Pcm.Length > 0)
                 {
                     var safeLoopStart = Math.Clamp(region.LoopStartSample, 0, Math.Max(0, region.Pcm.Length - 1));
-                    var loopLength = region.Pcm.Length - safeLoopStart;
+                    var loopLength = region.LoopDescriptor.ResolveLengthSamples(region.Pcm.Length);
                     if (loopLength > 0 && loopLength <= ShortLoopAlignmentThresholdSamples)
                     {
                         foundVeryShortLoop = true;
@@ -1456,11 +1427,7 @@ public static class BgmMidiSf2Rebuilder
         return null;
     }
 
-    private static List<AuthoredTrackPlan> BuildTrackPlans(
-        MidiFile midi,
-        IReadOnlyDictionary<PresetRef, ProgramMapping> programMap,
-        HashSet<string> warnings,
-        bool enablePitchBendWorkaround)
+    private static List<(int Channel, string Name, List<MidiEvent> Events)> GetSourceTrackGroups(MidiFile midi)
     {
         var sourceTrackGroups = new List<(int Channel, string Name, List<MidiEvent> Events)>();
         foreach (var track in midi.Tracks)
@@ -1494,6 +1461,16 @@ public static class BgmMidiSf2Rebuilder
             }
         }
 
+        return sourceTrackGroups;
+    }
+
+    private static List<AuthoredTrackPlan> BuildTrackPlans(
+        MidiFile midi,
+        IReadOnlyDictionary<PresetRef, ProgramMapping> programMap,
+        HashSet<string> warnings,
+        bool enablePitchBendWorkaround)
+    {
+        var sourceTrackGroups = GetSourceTrackGroups(midi);
         var plans = new List<AuthoredTrackPlan>();
         foreach (var sourceTrack in sourceTrackGroups)
         {
@@ -1872,9 +1849,11 @@ public static class BgmMidiSf2Rebuilder
         var templateHeader = new byte[Math.Min(0x20, bank.OriginalBytes.Length)];
         Buffer.BlockCopy(bank.OriginalBytes, 0, templateHeader, 0, templateHeader.Length);
 
-        var instrumentCount = plan.Instruments.Count == 0
+        var authoredInstrumentCount = plan.Instruments.Count == 0
             ? 0
             : plan.Instruments.Max(static instrument => instrument.Index) + 1;
+        var templateInstrumentCount = checked((int)BinaryHelpers.ReadUInt32LE(bank.OriginalBytes, 0x8));
+        var instrumentCount = Math.Max(authoredInstrumentCount, templateInstrumentCount);
         var totalRegions = plan.Instruments.Sum(static instrument => instrument.Regions.Count);
         var regionTableOffset = Align16(0x20 + (instrumentCount * 4));
         var sampleCollectionOffset = regionTableOffset + (totalRegions * 0x20);
@@ -1945,8 +1924,8 @@ public static class BgmMidiSf2Rebuilder
                     }
                 }
 
-                BinaryHelpers.WriteUInt16LE(regionBytes, 0x0E, adsr.Adsr1);
-                BinaryHelpers.WriteUInt16LE(regionBytes, 0x10, adsr.Adsr2);
+                BinaryHelpers.WriteUInt16LE(regionBytes, 0x0C, adsr.Adsr1);
+                BinaryHelpers.WriteUInt16LE(regionBytes, 0x0E, adsr.Adsr2);
                 EncodeRootNote(ComposeRootNote(effectivePitch.RootKey, effectivePitch.FineTuneCents), out var fineTune, out var unityKey);
                 regionBytes[0x12] = fineTune;
                 regionBytes[0x13] = unityKey;
@@ -2010,12 +1989,9 @@ public static class BgmMidiSf2Rebuilder
 
             var pitchSemitones = 12.0 * Math.Log(currentSampleRate / (double)targetSampleRate, 2.0);
             var resampledPcm = AudioDsp.ResampleMono(sample.Pcm, currentSampleRate, targetSampleRate);
+            var loopScale = targetSampleRate / (double)currentSampleRate;
             var resampledRequestedLoop = sample.RequestedLooping
-                ? LoopDescriptor.FromSamples(
-                    true,
-                    Math.Clamp((int)Math.Round(sample.RequestedLoopStartSample * (targetSampleRate / (double)currentSampleRate), MidpointRounding.AwayFromZero), 0, Math.Max(0, resampledPcm.Length - 1)),
-                    resampledPcm.Length,
-                    sample.RequestedLoopDescriptor.Type)
+                ? sample.RequestedLoopDescriptor.ScaleSamples(loopScale, resampledPcm.Length)
                 : LoopDescriptor.None;
             var prepared = PrepareLoopAlignedSample(resampledPcm, resampledRequestedLoop, false);
             var encoded = PsxAdpcmEncoder.Encode(prepared.Pcm, prepared.LoopDescriptor);
@@ -2198,7 +2174,7 @@ public static class BgmMidiSf2Rebuilder
     }
 
     private static string BuildLoopAwareIdentityKey(string baseIdentityKey, LoopDescriptor loopDescriptor)
-        => $"{baseIdentityKey}|loop={(loopDescriptor.Looping ? 1 : 0)}|ls={(loopDescriptor.Looping ? Math.Max(0, loopDescriptor.ResolveStartSamples(int.MaxValue)) : 0)}|lm={loopDescriptor.StartMeasure}";
+        => $"{baseIdentityKey}|loop={(loopDescriptor.Looping ? 1 : 0)}|ls={(loopDescriptor.Looping ? Math.Max(0, loopDescriptor.ResolveStartSamples(int.MaxValue)) : 0)}|ll={(loopDescriptor.Looping ? Math.Max(0, loopDescriptor.ResolveLengthSamples(int.MaxValue)) : 0)}|lm={loopDescriptor.StartMeasure}/{loopDescriptor.LengthMeasure}";
 
     private static int ScoreTemplateRegion(WdRegionEntry template, AuthoredRegion region, int regionIndex)
     {
@@ -2314,7 +2290,8 @@ public static class BgmMidiSf2Rebuilder
                             region.SourceInfo.EffectiveLooping,
                             region.SourceInfo.EffectiveLoopStartSample,
                             sourceLoopManifest,
-                            effectiveLoopManifest);
+                            effectiveLoopManifest,
+                            region.SourceInfo.SoundFontDebug);
                         var templateRegionManifest = templateRegion is null
                             ? null
                             : CreateTemplateRegionManifest(bank, templateRegion);
@@ -3253,6 +3230,20 @@ public static class BgmMidiSf2Rebuilder
         }
 
         var safeLoopStart = loopDescriptor.ResolveStartSamples(pcm.Length);
+        var safeLoopLength = loopDescriptor.ResolveLengthSamples(pcm.Length);
+        var safeLoopEnd = safeLoopLength > 0
+            ? Math.Clamp(safeLoopStart + safeLoopLength, safeLoopStart + 1, pcm.Length)
+            : pcm.Length;
+        if (safeLoopEnd < pcm.Length)
+        {
+            // PSX ADPCM has a loop-start flag but no separate SF2-style loop-end marker;
+            // trim the stored sample to the requested loop end so the in-game loop wraps correctly.
+            var loopBoundedPcm = new short[safeLoopEnd];
+            Array.Copy(pcm, loopBoundedPcm, safeLoopEnd);
+            pcm = loopBoundedPcm;
+            loopDescriptor = LoopDescriptor.FromSamples(true, safeLoopStart, pcm.Length, loopDescriptor.Type);
+        }
+
         var remainder = safeLoopStart % 28;
         if (remainder == 0)
         {
@@ -3872,7 +3863,8 @@ internal sealed record AuthoredRegionSourceInfo(
     LoopDescriptor SourceLoopDescriptor,
     bool WasDownmixedPseudoStereo,
     bool SourceStereoPair,
-    LoopDescriptor EffectiveLoopDescriptor)
+    LoopDescriptor EffectiveLoopDescriptor,
+    SoundFontRegionDebug SoundFontDebug)
 {
     public bool SourceLooping => SourceLoopDescriptor.Looping;
 
@@ -4054,7 +4046,8 @@ internal sealed record MidiSf2AuthoredRegionSourceManifest(
     bool EffectiveLooping,
     int EffectiveLoopStartSample,
     MidiSf2LoopManifest SourceLoop,
-    MidiSf2LoopManifest EffectiveLoop);
+    MidiSf2LoopManifest EffectiveLoop,
+    SoundFontRegionDebug SoundFontDebug);
 
 internal sealed record MidiSf2TemplateRegionManifest(
     int InstrumentIndex,

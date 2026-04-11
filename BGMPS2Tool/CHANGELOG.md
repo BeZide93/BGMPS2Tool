@@ -1,5 +1,50 @@
 # CHANGELOG
 
+## v0.8.9 - 2026-04-11
+
+### Added
+
+- MIDI/SF2 manifests now include a Polyphone-style `SoundFontDebug` audit block for each authored region, including raw SF2 generator values, resolved generator values, `shdr` sample/loop header data, resolved sample/loop offsets, and parsed `pmod`/`imod` modulator records
+- SoundFont `pmod` and `imod` chunks are now parsed passively for manifest/debug comparison against tools such as Polyphone
+
+### Changed
+
+- ignored SoundFont generator warnings now include the generator name, making filter/LFO/modulator-envelope gaps easier to diagnose during SF2 import testing
+- SF2 fixed `keynum` and fixed `velocity` generators are now imported as audit-only data instead of being silently conflated with loop-offset handling
+
+### Fixed
+
+- corrected the SF2 generator mapping around the Polyphone/SF2 operator IDs: `46 = keynum`, `47 = velocity`, and `50 = endloopAddrsCoarseOffset`
+- real `endloopAddrsCoarseOffset` values are now read from operator `50`; operator `46` is no longer incorrectly treated as a coarse loop-end offset
+
+## v0.8.8 - 2026-04-11
+
+### Changed
+
+- MIDI/SF2 import now resolves non-ADSR SoundFont generators with explicit set/unset tracking as well, including sample offsets, loop offsets, tuning, `sampleModes`, key/velocity ranges, and `scaleTuning`
+- loop metadata now keeps SF2-style loop start and loop length through parser, preview, manifest, resample, and size-guard paths instead of silently expanding every loop to `loop start -> sample end`
+- PSX ADPCM authoring still trims stored looping samples to the effective SF2 loop end, because the PSX stream format has a loop-start flag but no separate SF2-style loop-end marker
+
+### Fixed
+
+- MIDI/SF2 preset detection now uses the same track/channel-local program-state logic as the actual BGM track writer, fixing VGMTrans-style MIDIs where reused channels across separate tracks caused programs such as `0/0`, `0/2`, or `0/3` to be skipped during WD authoring
+- later WD size-guard resampling now scales both loop start and loop length, preventing loop pitch compensation from drifting back toward the sample tail
+- SoundFont looped samples are no longer cut to `loopEnd` during SF2 parsing; the full `shdr.start..shdr.end` sample range is retained internally and the loop window is carried separately
+- `scaleTuning` is now imported and approximated at each region center during WD pitch encoding instead of being ignored
+
+## v0.8.7 - 2026-04-11
+
+### Changed
+
+- MIDI/SF2 conversion now uses the corrected SoundFont envelope import/merge path, so preset/global and instrument/local ADSR generators are resolved consistently before WD authoring
+- `midi_program_compaction=preserve` is now the conservative packaged configuration for keeping original-style sparse WD program slots during MIDI/SF2 rebuild tests
+- the WD writer now keeps at least the original template instrument-slot count instead of shrinking authored banks below the source layout
+
+### Fixed
+
+- authored MIDI/SF2 ADSR is now written to the canonical WD ADSR pair: `ADSR1 -> 0x0C..0x0D` and `ADSR2 -> 0x0E..0x0F`
+- WD read, native render, and Advanced-tab ADSR paths now use the same `0x0C/0x0E` ADSR mapping so the branch stays internally consistent
+
 ## v0.8.6 - 2026-04-08
 
 ### Added

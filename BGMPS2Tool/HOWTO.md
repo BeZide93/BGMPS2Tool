@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.8.6`
+Version: `v0.8.9`
 
 ## Goal
 
@@ -78,7 +78,7 @@ sf2_bank_mode=used
 sf2_pre_eq=0.0
 sf2_pre_lowpass_hz=0
 sf2_auto_lowpass=0
-midi_program_compaction=auto
+midi_program_compaction=preserve
 adsr=authored
 midi_pitch_bend_workaround=1
 midi_loop=0
@@ -109,8 +109,17 @@ Notes:
 - `sf2_volume=1.0` is recommended if you want the closest possible `SF2 -> WD -> SF2` roundtrip fidelity
 - `sf2_bank_mode=used` is the normal mode for MIDI-driven rebuilds
 - `sf2_bank_mode=full` is useful if you mainly want the `SF2 -> WD` conversion, including unused presets, for pairing with existing `BGM` files
+- `midi_program_compaction=preserve` is the conservative packaged default for keeping original-style sparse WD instrument slots during compatibility testing
 - the authored ADSR path now follows the same `PSXSPU` / `RateTable` timing model used by `VGMTrans`, so it is much closer to real KH2 export ADSR behavior than the older heuristic
+- SoundFont ADSR generators are now resolved with corrected global/local merge behavior before the solver receives the effective region envelope
+- authored ADSR is written to `ADSR1 -> 0x0C..0x0D` and `ADSR2 -> 0x0E..0x0F`, and the WD reader, renderer, and Advanced-tab decode path use the same pair
 - native SoundFont sample rates are now preserved during import, and KH2 pitch is compensated through WD tuning instead of forcing early `44100 Hz` normalization
+- non-ADSR SoundFont generators now use the same explicit set/unset merge principle where it matters for sample offsets, loop offsets, tuning, key/velocity ranges, `sampleModes`, and `scaleTuning`
+- SF2 loop data is carried as loop start plus loop length instead of being flattened to sample-end too early
+- VGMTrans-style MIDIs that reuse channels across separate tracks are now scanned trackwise, so used programs such as `0/0`, `0/2`, and `0/3` are authored instead of being skipped
+- SoundFont generator IDs now follow the Polyphone/SF2 mapping for the key/loop edge case: `46=keynum`, `47=velocity`, and `50=endloopAddrsCoarseOffset`
+- MIDI/SF2 manifests now include `Source.SoundFontDebug` for Polyphone-style auditing of raw/resolved generators, `shdr` sample and loop headers, resolved loop offsets, and parsed `pmod`/`imod` records
+- parsed `pmod`/`imod` records are debug/audit-only for now; live SF2 dynamic modulation is intentionally not written into WD playback yet
 - WD fine-tune encoding now follows the SquarePS2/VGMTrans non-linear table, so `UnityKey/FineTune` stays much closer to real KH2 tuning behavior
 - sample pitch and region tuning are now kept separate until the final WD pitch write, which keeps the authored MIDI/SF2 path closer to how `VGMTrans` carries sample vs region pitch
 - loop metadata is now also carried internally as `start + length + measure` and only converted to final PS2 loop bytes late in the authoring path
@@ -348,9 +357,10 @@ Your files should be:
 - The MIDI/SF2 workflow is more structured than the long-note WAV workaround.
 - The current SoundFont importer converts presets, regions, key ranges, tuning, volume, pan, and loops.
 - native SoundFont sample rates are now preserved during import, and KH2 pitch is compensated through WD tuning instead of early `44100 Hz` normalization
+- looped SF2 samples keep their full sample header range internally, while KH2/PSX output still stores looping samples bounded to the effective loop end because PSX ADPCM has no separate SF2-style loop-end flag
 - on that preserved-rate sample data, the MIDI/SF2 path can optionally apply SoundFont-side pre-conditioning with `sf2_pre_eq`, `sf2_pre_lowpass_hz`, and `sf2_auto_lowpass`
 - WD fine-tune encoding now follows the SquarePS2/VGMTrans non-linear table, so `UnityKey/FineTune` stays much closer to real KH2 tuning behavior
-- Advanced SF2 features such as modulators, filters, and LFO behavior are currently ignored.
+- Advanced SF2 dynamic behavior such as modulators, filters, and LFOs is not converted into WD playback yet, but raw generators and `pmod`/`imod` records are now exposed in the manifest for Polyphone-style comparison.
 - MIDI pitch-bend is currently approximated, not yet written as a true native KH2 pitch opcode.
 - The MIDI workflow now keeps the original PS2 `BGM` slot layout.
 - Hard safety caps currently are:

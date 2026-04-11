@@ -10,4 +10,8 @@ Special thanks to `VGMTrans` as well.
 
 The current authored ADSR fix was heavily informed by studying the `VGMTrans` PSX/PS2 ADSR export behavior and timing model.
 
+Special thanks to `Polyphone` as well.
+
+The current SF2 import and region-generator fixes were informed by studying `Polyphone`'s SoundFont handling, especially around generator merging, loop windows, tuning, sample sizes, and region-level envelope data.
+
 Thanks as well to the `OpenKH` community for the broader knowledge-sharing, research context, and community resources around `Kingdom Hearts II Final Mix` modding and tooling.

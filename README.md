@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.8.6`
+Version: `v0.8.9`
 
 <picture>
  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/BeZide93/BGMPS2Tool/blob/main/Icon.png">
@@ -50,6 +50,27 @@ Sample pitch and region tuning are now also kept separate much longer in the MID
 Loop handling now also uses a real internal `start + length + measure` descriptor instead of flattening loops immediately to KH2/WD-only loop bytes. That keeps loop/sample metadata much closer to the way `VGMTrans` carries loop state before final conversion.
 
 The region-side tuning path now also keeps explicit `overridingRootKey`, `coarseTune`, and `fineTune` components until the final WD pitch write, instead of collapsing everything early into one temporary authored pitch value.
+
+The `v0.8.7` rebuild path also corrects the SoundFont ADSR import/merge behavior and writes authored PS2 ADSR to the canonical WD pair used by the decoder:
+
+- `ADSR1 -> 0x0C..0x0D`
+- `ADSR2 -> 0x0E..0x0F`
+
+For conservative KH2 WD compatibility testing, the packaged configuration now keeps sparse/original-style program slots with `midi_program_compaction=preserve` and the WD writer keeps at least the original template instrument count.
+
+The `v0.8.8` rebuild path extends the Polyphone-style SoundFont import fixes beyond ADSR:
+
+- SF2 sample/loop offsets, key/velocity ranges, tuning, `sampleModes`, and `scaleTuning` now preserve explicit set-vs-unset behavior during global/local zone merging
+- looped SF2 samples keep their full `shdr.start..shdr.end` sample range internally while carrying the real loop start and loop length separately
+- PSX ADPCM output still bounds looping samples to the effective SF2 loop end, because KH2/PSX playback has a loop-start flag but no separate SF2-style loop-end marker
+- MIDI preset detection now follows the same track/channel-local program-state logic as BGM authoring, so VGMTrans-style MIDIs with reused channels across tracks no longer skip used programs like `0/0`, `0/2`, or `0/3`
+
+The `v0.8.9` rebuild path adds a safer Polyphone-facing SF2 audit layer:
+
+- SF2 generator IDs now follow the Polyphone/SF2 mapping around the risky loop/key area: `46 = keynum`, `47 = velocity`, and `50 = endloopAddrsCoarseOffset`
+- `pmod` and `imod` modulator chunks are now parsed for manifest/debug inspection, but dynamic modulation is still not converted into WD playback
+- each authored MIDI/SF2 manifest region now includes `Source.SoundFontDebug` with raw/resolved generators, `shdr` sample/loop header values, resolved sample/loop offsets, and parsed modulator records
+- ignored SoundFont generator warnings now include readable generator names, so missing filter/LFO/mod-envelope behavior is much easier to identify during Polyphone comparisons
 
 ## Included Files
 
@@ -137,12 +158,15 @@ Notes:
   - `auto` = keep the current heuristic
   - `compact` = remove sparse WD table gaps and renumber authored instruments densely
   - `preserve` = keep original-style sparse program indices even if that leaves empty WD slots between real instruments
+- the packaged `v0.8.7` config uses `midi_program_compaction=preserve` for safer WD layout comparisons against original KH2 banks
 - `adsr` applies only to the MIDI/SF2 workflow.
   - `authored` = use the VGMTrans-style authored PS2 ADSR fit everywhere
   - `auto` = use the current hybrid logic and borrow template WD ADSR where that still helps
   - `template` = force template WD ADSR wherever a template match exists
 - `adsr=authored` is now the default and recommended mode.
 - the authored ADSR path now fits PS2 envelopes against the same `PSXSPU` / `RateTable` model used by `VGMTrans`, so it is much closer to real exported KH2 ADSR behavior than the older local heuristic was
+- SoundFont volume-envelope generators are now merged with SF2-style global/local override behavior before being combined into the final effective region ADSR
+- authored ADSR is written to the canonical WD words `0x0C..0x0D` and `0x0E..0x0F`, and the WD reader / renderer / Advanced tab decode the same pair
 - `midi_pitch_bend_workaround` applies only to the MIDI/SF2 workflow. When enabled, the tool approximates pitch bend by retargeting notes and, where needed, generating tuned instrument variants. When disabled, pitch bend events are ignored completely.
 - `midi_loop` applies only to the MIDI/SF2 workflow. Use `1` if you want the authored PS2 `BGM` to loop instead of ending as a one-shot sequence.
 - `hold_minutes` is mainly relevant to the older `replacewav` loop workflow.
@@ -295,5 +319,3 @@ the tool will create:
 See:
 
 - `CHANGELOG.md`
-
-

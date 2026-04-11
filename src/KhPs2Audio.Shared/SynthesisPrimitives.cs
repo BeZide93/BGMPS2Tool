@@ -34,6 +34,16 @@ internal sealed record LoopDescriptor(
         return new LoopDescriptor(true, safeStart, safeLength, LoopMeasure.Samples, LoopMeasure.Samples, type);
     }
 
+    public static LoopDescriptor FromSampleLength(bool looping, int loopStartSample, int loopLengthSamples, LoopType type = LoopType.Forward)
+    {
+        if (!looping)
+        {
+            return None;
+        }
+
+        return new LoopDescriptor(true, Math.Max(0, loopStartSample), Math.Max(0, loopLengthSamples), LoopMeasure.Samples, LoopMeasure.Samples, type);
+    }
+
     public static LoopDescriptor FromBytes(bool looping, int loopStartBytes, int loopLengthBytes, LoopType type = LoopType.Forward)
     {
         if (!looping)
@@ -98,10 +108,28 @@ internal sealed record LoopDescriptor(
         => PsxAdpcmLoopMath.SamplesToBytes(ResolveStartSamples(sampleLength));
 
     public LoopDescriptor NormalizeToSamples(int sampleLength, int bytesPerSample = sizeof(short))
-        => FromSamples(Looping, ResolveStartSamples(sampleLength, bytesPerSample), sampleLength, Type);
+    {
+        if (!Looping)
+        {
+            return None;
+        }
+
+        return FromSampleLength(
+            true,
+            ResolveStartSamples(sampleLength, bytesPerSample),
+            ResolveLengthSamples(sampleLength, bytesPerSample),
+            Type);
+    }
 
     public LoopDescriptor WithSampleStart(int loopStartSample, int sampleLength)
-        => FromSamples(Looping, loopStartSample, sampleLength, Type);
+    {
+        if (!Looping)
+        {
+            return None;
+        }
+
+        return FromSampleLength(true, loopStartSample, ResolveLengthSamples(sampleLength), Type);
+    }
 
     public LoopDescriptor ScaleSamples(double scale, int scaledSampleLength)
     {
@@ -110,8 +138,23 @@ internal sealed record LoopDescriptor(
             return None;
         }
 
-        var scaledStart = Math.Clamp((int)Math.Round(ResolveStartSamples(scaledSampleLength) * scale, MidpointRounding.AwayFromZero), 0, Math.Max(0, scaledSampleLength - 1));
-        return FromSamples(true, scaledStart, scaledSampleLength, Type);
+        var sourceStart = StartMeasure switch
+        {
+            LoopMeasure.Samples => Start,
+            LoopMeasure.Bytes => Start / sizeof(short),
+            LoopMeasure.PsxAdpcmBlocks => Start * 28,
+            _ => Start,
+        };
+        var sourceLength = LengthMeasure switch
+        {
+            LoopMeasure.Samples => Length,
+            LoopMeasure.Bytes => Length / sizeof(short),
+            LoopMeasure.PsxAdpcmBlocks => Length * 28,
+            _ => Length,
+        };
+        var scaledStart = Math.Clamp((int)Math.Round(sourceStart * scale, MidpointRounding.AwayFromZero), 0, Math.Max(0, scaledSampleLength - 1));
+        var scaledLength = Math.Clamp((int)Math.Round(sourceLength * scale, MidpointRounding.AwayFromZero), 0, Math.Max(0, scaledSampleLength - scaledStart));
+        return FromSampleLength(true, scaledStart, scaledLength, Type);
     }
 }
 
@@ -159,12 +202,17 @@ internal sealed record SamplePitchComponents(
 internal sealed record RegionPitchComponents(
     int? OverridingRootKey,
     int CoarseTuneSemitones,
-    int FineTuneCents)
+    int FineTuneCents,
+    int ScaleTuningCentsPerKey = 100,
+    int ScaleTuningReferenceKey = 60)
 {
     public double ResolveOffsetFromSourcePitch(SamplePitchComponents samplePitch)
     {
-        var rootOverrideOffset = (OverridingRootKey ?? samplePitch.OriginalPitch) - samplePitch.OriginalPitch;
-        return rootOverrideOffset + CoarseTuneSemitones + (FineTuneCents / 100.0);
+        var effectiveRootKey = OverridingRootKey ?? samplePitch.OriginalPitch;
+        var rootOverrideOffset = effectiveRootKey - samplePitch.OriginalPitch;
+        var scale = Math.Clamp(ScaleTuningCentsPerKey, 0, 1200) / 100.0;
+        var scaleOffset = (ScaleTuningReferenceKey - effectiveRootKey) * (1.0 - scale);
+        return rootOverrideOffset + CoarseTuneSemitones + (FineTuneCents / 100.0) + scaleOffset;
     }
 
     public double ResolveEffectiveRootNoteSemitones(SamplePitchComponents samplePitch)

@@ -567,8 +567,8 @@ internal sealed class WdBankFile
                 var fineTuneCents = WdSampleTool.ConvertWdFineTune(data[offset + 0x12]);
                 var volume = data[offset + 0x16] / 127f;
                 var pan = WdSampleTool.ConvertWdPan(data[offset + 0x17]);
-                var adsr1 = BinaryHelpers.ReadUInt16LE(data, offset + 0x0E);
-                var adsr2 = BinaryHelpers.ReadUInt16LE(data, offset + 0x10);
+                var adsr1 = BinaryHelpers.ReadUInt16LE(data, offset + 0x0C);
+                var adsr2 = BinaryHelpers.ReadUInt16LE(data, offset + 0x0E);
 
                 instrumentRegions.Add(new WdRegionEntry(offset, instrumentIndex, regionIndex, sampleOffset, loopStartBytes, stereo, first, last, 0, keyHigh, 0, velocityHigh, unityKey, fineTuneCents, volume, pan, adsr1, adsr2));
                 regionIndex++;

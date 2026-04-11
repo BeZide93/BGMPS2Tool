@@ -455,8 +455,8 @@ public static class WdAdvancedTooling
 
     private static void WriteRegionAdsr(byte[] outputBytes, int regionOffset, ushort adsr1, ushort adsr2)
     {
-        BinaryHelpers.WriteUInt16LE(outputBytes, regionOffset + 0x0E, adsr1);
-        BinaryHelpers.WriteUInt16LE(outputBytes, regionOffset + 0x10, adsr2);
+            BinaryHelpers.WriteUInt16LE(outputBytes, regionOffset + 0x0C, adsr1);
+            BinaryHelpers.WriteUInt16LE(outputBytes, regionOffset + 0x0E, adsr2);
     }
 
     private static void WriteRegionLoop(byte[] outputBytes, int regionOffset, bool looping, int loopStartBytes)

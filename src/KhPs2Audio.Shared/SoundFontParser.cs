@@ -25,9 +25,11 @@ internal static class SoundFontParser
         byte[]? sampleChunk = null;
         byte[]? phdrChunk = null;
         byte[]? pbagChunk = null;
+        byte[]? pmodChunk = null;
         byte[]? pgenChunk = null;
         byte[]? instChunk = null;
         byte[]? ibagChunk = null;
+        byte[]? imodChunk = null;
         byte[]? igenChunk = null;
         byte[]? shdrChunk = null;
 
@@ -53,9 +55,11 @@ internal static class SoundFontParser
                 {
                     phdrChunk = FindChunk(data, chunkDataOffset + 4, chunkLength - 4, "phdr");
                     pbagChunk = FindChunk(data, chunkDataOffset + 4, chunkLength - 4, "pbag");
+                    pmodChunk = FindChunk(data, chunkDataOffset + 4, chunkLength - 4, "pmod");
                     pgenChunk = FindChunk(data, chunkDataOffset + 4, chunkLength - 4, "pgen");
                     instChunk = FindChunk(data, chunkDataOffset + 4, chunkLength - 4, "inst");
                     ibagChunk = FindChunk(data, chunkDataOffset + 4, chunkLength - 4, "ibag");
+                    imodChunk = FindChunk(data, chunkDataOffset + 4, chunkLength - 4, "imod");
                     igenChunk = FindChunk(data, chunkDataOffset + 4, chunkLength - 4, "igen");
                     shdrChunk = FindChunk(data, chunkDataOffset + 4, chunkLength - 4, "shdr");
                 }
@@ -73,9 +77,11 @@ internal static class SoundFontParser
         var sampleData = ParseSampleChunk(sampleChunk);
         var presetHeaders = ParsePresetHeaders(phdrChunk);
         var presetBags = ParseBags(pbagChunk);
+        var presetModulators = pmodChunk is null ? [] : ParseModulators(pmodChunk, "pmod");
         var presetGenerators = ParseGenerators(pgenChunk);
         var instrumentHeaders = ParseInstrumentHeaders(instChunk);
         var instrumentBags = ParseBags(ibagChunk);
+        var instrumentModulators = imodChunk is null ? [] : ParseModulators(imodChunk, "imod");
         var instrumentGenerators = ParseGenerators(igenChunk);
         var sampleHeaders = ParseSampleHeaders(shdrChunk);
 
@@ -89,7 +95,7 @@ internal static class SoundFontParser
                 ? presetHeaders[presetIndex + 1].BagIndex
                 : presetBags.Count - 1;
 
-            var presetZones = ReadPresetZones(presetBags, presetGenerators, preset.BagIndex, nextPresetBagIndex, warnings);
+            var presetZones = ReadPresetZones(presetBags, presetGenerators, presetModulators, preset.BagIndex, nextPresetBagIndex, warnings);
             var presetGlobal = presetZones.FirstOrDefault(zone => zone.InstrumentIndex is null);
             var localPresetZones = presetZones.Where(zone => zone.InstrumentIndex.HasValue).ToList();
 
@@ -107,16 +113,17 @@ internal static class SoundFontParser
                 var nextInstrumentBagIndex = instrumentIndex < instrumentHeaders.Count - 1
                     ? instrumentHeaders[instrumentIndex + 1].BagIndex
                     : instrumentBags.Count - 1;
-                var instrumentZones = ReadInstrumentZones(instrumentBags, instrumentGenerators, instrument.BagIndex, nextInstrumentBagIndex, warnings);
+                var instrumentZones = ReadInstrumentZones(instrumentBags, instrumentGenerators, instrumentModulators, instrument.BagIndex, nextInstrumentBagIndex, warnings);
                 var instrumentGlobal = instrumentZones.FirstOrDefault(zone => zone.SampleId is null);
 
                 foreach (var instrumentZone in instrumentZones.Where(zone => zone.SampleId.HasValue))
                 {
-                    var combined = GeneratorValues.Merge(
-                        GeneratorValues.Merge(presetGlobal?.Values, presetZone.Values),
-                        GeneratorValues.Merge(instrumentGlobal?.Values, instrumentZone.Values));
+                    var presetCombined = GeneratorValues.MergeWithinDomain(presetGlobal?.Values, presetZone.Values);
+                    var instrumentCombined = GeneratorValues.MergeWithinDomain(instrumentGlobal?.Values, instrumentZone.Values);
+                    var combined = GeneratorValues.MergeAcrossDomains(presetCombined, instrumentCombined);
+                    var modulators = CombineModulators(presetGlobal?.Modulators, presetZone.Modulators, instrumentGlobal?.Modulators, instrumentZone.Modulators);
 
-                    var materialized = MaterializeRegion(preset, combined, instrumentZone.SampleId, sampleHeaders, sampleData, playbackSampleRate, importOptions, warnings);
+                    var materialized = MaterializeRegion(preset, combined, modulators, instrumentZone.SampleId, sampleHeaders, sampleData, playbackSampleRate, importOptions, warnings);
                     if (materialized is not null)
                     {
                         materializedRegions.Add(materialized);
@@ -259,6 +266,30 @@ internal static class SoundFontParser
         return generators;
     }
 
+    private static List<Sf2Modulator> ParseModulators(byte[] chunk, string chunkName)
+    {
+        const int recordSize = 10;
+        if (chunk.Length < recordSize || chunk.Length % recordSize != 0)
+        {
+            throw new InvalidDataException($"Invalid SoundFont {chunkName} chunk length.");
+        }
+
+        var count = chunk.Length / recordSize;
+        var modulators = new List<Sf2Modulator>(count);
+        for (var index = 0; index < count; index++)
+        {
+            var entryOffset = index * recordSize;
+            modulators.Add(new Sf2Modulator(
+                BinaryHelpers.ReadUInt16LE(chunk, entryOffset),
+                BinaryHelpers.ReadUInt16LE(chunk, entryOffset + 2),
+                unchecked((short)BinaryHelpers.ReadUInt16LE(chunk, entryOffset + 4)),
+                BinaryHelpers.ReadUInt16LE(chunk, entryOffset + 6),
+                BinaryHelpers.ReadUInt16LE(chunk, entryOffset + 8)));
+        }
+
+        return modulators;
+    }
+
     private static List<Sf2SampleHeader> ParseSampleHeaders(byte[] chunk)
     {
         const int recordSize = 46;
@@ -292,6 +323,7 @@ internal static class SoundFontParser
     private static List<Sf2PresetZone> ReadPresetZones(
         List<Sf2Bag> bags,
         List<Sf2Generator> generators,
+        List<Sf2Modulator> modulators,
         int firstBagIndex,
         int nextBagIndex,
         HashSet<string> warnings)
@@ -303,6 +335,10 @@ internal static class SoundFontParser
             var generatorEnd = bagIndex < bags.Count - 1
                 ? bags[bagIndex + 1].GeneratorIndex
                 : generators.Count;
+            var modulatorStart = bags[bagIndex].ModulatorIndex;
+            var modulatorEnd = bagIndex < bags.Count - 1
+                ? bags[bagIndex + 1].ModulatorIndex
+                : modulators.Count;
 
             var values = new GeneratorValues();
             int? instrumentIndex = null;
@@ -319,7 +355,9 @@ internal static class SoundFontParser
                 }
             }
 
-            zones.Add(new Sf2PresetZone(instrumentIndex, values));
+            var zoneKind = instrumentIndex is null ? "global" : "local";
+            var zoneModulators = ReadZoneModulators(modulators, modulatorStart, modulatorEnd, "preset", zoneKind, warnings);
+            zones.Add(new Sf2PresetZone(instrumentIndex, values, zoneModulators));
         }
 
         return zones;
@@ -328,6 +366,7 @@ internal static class SoundFontParser
     private static List<Sf2InstrumentZone> ReadInstrumentZones(
         List<Sf2Bag> bags,
         List<Sf2Generator> generators,
+        List<Sf2Modulator> modulators,
         int firstBagIndex,
         int nextBagIndex,
         HashSet<string> warnings)
@@ -339,6 +378,10 @@ internal static class SoundFontParser
             var generatorEnd = bagIndex < bags.Count - 1
                 ? bags[bagIndex + 1].GeneratorIndex
                 : generators.Count;
+            var modulatorStart = bags[bagIndex].ModulatorIndex;
+            var modulatorEnd = bagIndex < bags.Count - 1
+                ? bags[bagIndex + 1].ModulatorIndex
+                : modulators.Count;
 
             var values = new GeneratorValues();
             int? sampleId = null;
@@ -355,15 +398,69 @@ internal static class SoundFontParser
                 }
             }
 
-            zones.Add(new Sf2InstrumentZone(sampleId, values));
+            var zoneKind = sampleId is null ? "global" : "local";
+            var zoneModulators = ReadZoneModulators(modulators, modulatorStart, modulatorEnd, "instrument", zoneKind, warnings);
+            zones.Add(new Sf2InstrumentZone(sampleId, values, zoneModulators));
         }
 
         return zones;
     }
 
+    private static IReadOnlyList<SoundFontModulatorDebug> ReadZoneModulators(
+        IReadOnlyList<Sf2Modulator> modulators,
+        int startIndex,
+        int endIndex,
+        string domain,
+        string zoneKind,
+        HashSet<string> warnings)
+    {
+        if (modulators.Count == 0)
+        {
+            return [];
+        }
+
+        var safeStart = Math.Clamp(startIndex, 0, modulators.Count);
+        var safeEnd = Math.Clamp(endIndex, safeStart, modulators.Count);
+        var output = new List<SoundFontModulatorDebug>();
+        for (var index = safeStart; index < safeEnd; index++)
+        {
+            var modulator = modulators[index];
+            if (modulator.IsTerminal)
+            {
+                continue;
+            }
+
+            output.Add(modulator.ToDebug(domain, zoneKind, index));
+        }
+
+        if (output.Count > 0)
+        {
+            warnings.Add("SoundFont modulators (pmod/imod) are imported for manifest/debug audit only; dynamic modulation is not converted to WD playback.");
+        }
+
+        return output;
+    }
+
+    private static IReadOnlyList<SoundFontModulatorDebug> CombineModulators(params IReadOnlyList<SoundFontModulatorDebug>?[] modulatorGroups)
+    {
+        var combined = new List<SoundFontModulatorDebug>();
+        foreach (var group in modulatorGroups)
+        {
+            if (group is null || group.Count == 0)
+            {
+                continue;
+            }
+
+            combined.AddRange(group);
+        }
+
+        return combined;
+    }
+
     private static SoundFontRegion? MaterializeRegion(
         Sf2PresetHeader preset,
         GeneratorValues values,
+        IReadOnlyList<SoundFontModulatorDebug> modulators,
         int? sampleId,
         List<Sf2SampleHeader> sampleHeaders,
         short[] sampleData,
@@ -384,6 +481,11 @@ internal static class SoundFontParser
             return null;
         }
 
+        if (values.KeyLow > values.KeyHigh || values.VelocityLow > values.VelocityHigh)
+        {
+            return null;
+        }
+
         var monoSlice = ExtractSampleSlice(sample, values, sampleHeaders, sampleData, warnings);
         if (monoSlice is null || monoSlice.Pcm.Length == 0)
         {
@@ -391,6 +493,7 @@ internal static class SoundFontParser
         }
 
         monoSlice = PrepareSampleSliceForKh2PitchCompensation(monoSlice, sample, sampleHeaders, playbackSampleRate, importOptions, warnings);
+        var debug = CreateRegionDebug(sample, values, monoSlice, modulators);
 
         var samplePitch = new SamplePitchComponents(
             sample.OriginalPitch,
@@ -401,17 +504,23 @@ internal static class SoundFontParser
         var regionPitch = new RegionPitchComponents(
             values.OverridingRootKey,
             values.CoarseTuneSemitones,
-            values.FineTuneCents);
+            values.FineTuneCents,
+            values.ScaleTuningCentsPerKey,
+            (values.KeyLow + values.KeyHigh) / 2);
+        if (values.ScaleTuningCentsPerKey != 100)
+        {
+            warnings.Add($"SoundFont scaleTuning={values.ScaleTuningCentsPerKey} cents/key is approximated at each region center during WD pitch encoding.");
+        }
         var attenuationCentibels = Math.Max(0, values.InitialAttenuationCentibels);
         var volume = Math.Clamp((float)Math.Pow(10.0, -attenuationCentibels / 200.0), 0f, 1f);
         var reverbSend = Math.Clamp(values.ReverbEffectsSendTenthsPercent / 1000.0f, 0f, 1f);
         volume *= ComputeDryMixFromReverbSend(reverbSend);
         var pan = Math.Clamp(values.PanTenthsPercent / 500.0f, -1f, 1f);
-        var attackSeconds = TimecentsToSeconds(values.AttackVolEnvTimecents);
-        var holdSeconds = TimecentsToSeconds(values.HoldVolEnvTimecents);
-        var decaySeconds = TimecentsToSeconds(values.DecayVolEnvTimecents);
-        var sustainLevel = Math.Clamp((float)Math.Pow(10.0, -Math.Max(0, values.SustainVolEnvCentibels) / 200.0), 0f, 1f);
-        var releaseSeconds = TimecentsToSeconds(values.ReleaseVolEnvTimecents);
+        var attackSeconds = TimecentsToSeconds(values.AttackVolEnvTimecents ?? -12000);
+        var holdSeconds = TimecentsToSeconds(values.HoldVolEnvTimecents ?? -12000);
+        var decaySeconds = TimecentsToSeconds(values.DecayVolEnvTimecents ?? -12000);
+        var sustainLevel = Math.Clamp((float)Math.Pow(10.0, -Math.Max(0, values.SustainVolEnvCentibels ?? 0) / 200.0), 0f, 1f);
+        var releaseSeconds = TimecentsToSeconds(values.ReleaseVolEnvTimecents ?? -12000);
 
         return new SoundFontRegion(
             preset.Bank,
@@ -438,8 +547,34 @@ internal static class SoundFontParser
             monoSlice.SampleRate,
             monoSlice.LoopDescriptor,
             monoSlice.Pcm,
-            monoSlice.SecondaryPcm);
+            monoSlice.SecondaryPcm,
+            debug);
     }
+
+    private static SoundFontRegionDebug CreateRegionDebug(
+        Sf2SampleHeader sample,
+        GeneratorValues values,
+        ExtractedSampleSlice slice,
+        IReadOnlyList<SoundFontModulatorDebug> modulators)
+        => new(
+            sample.Index,
+            sample.Name,
+            sample.Start,
+            sample.End,
+            sample.StartLoop,
+            sample.EndLoop,
+            sample.SampleRate,
+            sample.OriginalPitch,
+            sample.PitchCorrection,
+            sample.SampleLink,
+            sample.SampleType,
+            slice.ResolvedStart,
+            slice.ResolvedEnd,
+            slice.ResolvedLoopStart,
+            slice.ResolvedLoopEnd,
+            slice.LoopDescriptor.Looping,
+            values.ToDebugGenerators(),
+            modulators);
 
     private static int DetermineReferenceSampleRate(IReadOnlyList<Sf2SampleHeader> sampleHeaders)
     {
@@ -626,7 +761,7 @@ internal static class SoundFontParser
         loopEnd = Math.Clamp(loopEnd, loopStart, end);
 
         var looping = (values.SampleModes & 0x1) != 0 && loopEnd > loopStart;
-        var sliceEnd = looping ? loopEnd : end;
+        var sliceEnd = end;
         if (sliceEnd <= start)
         {
             warnings.Add($"Sample {sample.Name} resolved to an empty slice after generator offsets.");
@@ -635,6 +770,7 @@ internal static class SoundFontParser
 
         var pcm = CopySlice(sampleData, start, sliceEnd);
         var loopStartSample = looping ? loopStart - start : 0;
+        var loopLengthSamples = looping ? loopEnd - loopStart : 0;
         var identityKey = $"{sample.Index}:{start}:{sliceEnd}:{loopStart}:{loopEnd}:{looping}:sr={sample.SampleRate}";
         var sourceName = sample.Name;
 
@@ -651,13 +787,15 @@ internal static class SoundFontParser
             linkedLoopStart = Math.Clamp(linkedLoopStart, linkedStart, linkedEnd);
             linkedLoopEnd = Math.Clamp(linkedLoopEnd, linkedLoopStart, linkedEnd);
 
-            var linkedSliceEnd = looping ? linkedLoopEnd : linkedEnd;
+            var linkedSliceEnd = linkedEnd;
             if (linkedSliceEnd > linkedStart)
             {
                 var linkedPcm = CopySlice(sampleData, linkedStart, linkedSliceEnd);
                 var pairLength = Math.Min(pcm.Length, linkedPcm.Length);
                 if (pairLength > 0)
                 {
+                    var pairedLoopStart = Math.Clamp(loopStartSample, 0, Math.Max(0, pairLength - 1));
+                    var pairedLoopLength = Math.Clamp(loopLengthSamples, 0, Math.Max(0, pairLength - pairedLoopStart));
                     pcm = TrimSlice(pcm, pairLength);
                     linkedPcm = TrimSlice(linkedPcm, pairLength);
                     identityKey = $"stereo:L:{Math.Min(sample.Index, linked.Index)}:{Math.Max(sample.Index, linked.Index)}:{start}:{sliceEnd}:{linkedStart}:{linkedSliceEnd}:{looping}:sr={sample.SampleRate}:sr2={linked.SampleRate}";
@@ -671,11 +809,17 @@ internal static class SoundFontParser
                         linkedPcm,
                         sample.SampleRate,
                         linked.SampleRate,
-                        LoopDescriptor.FromSamples(looping, Math.Clamp(loopStartSample, 0, Math.Max(0, pairLength - 1)), pairLength));
+                        LoopDescriptor.FromSampleLength(looping, pairedLoopStart, pairedLoopLength),
+                        start,
+                        sliceEnd,
+                        loopStart,
+                        loopEnd);
                 }
             }
         }
 
+        var safeLoopStart = Math.Clamp(loopStartSample, 0, Math.Max(0, pcm.Length - 1));
+        var safeLoopLength = Math.Clamp(loopLengthSamples, 0, Math.Max(0, pcm.Length - safeLoopStart));
         return new ExtractedSampleSlice(
             identityKey,
             sourceName,
@@ -685,7 +829,11 @@ internal static class SoundFontParser
             null,
             sample.SampleRate,
             null,
-            LoopDescriptor.FromSamples(looping, Math.Clamp(loopStartSample, 0, Math.Max(0, pcm.Length - 1)), pcm.Length));
+            LoopDescriptor.FromSampleLength(looping, safeLoopStart, safeLoopLength),
+            start,
+            sliceEnd,
+            loopStart,
+            loopEnd);
     }
 
     private static short[] CopySlice(short[] sampleData, int start, int endExclusive)
@@ -957,190 +1105,446 @@ internal static class SoundFontParser
         return (terminator >= 0 ? text[..terminator] : text).Trim();
     }
 
+    private static string GetGeneratorName(int op)
+        => op switch
+        {
+            0 => "startAddrsOffset",
+            1 => "endAddrsOffset",
+            2 => "startloopAddrsOffset",
+            3 => "endloopAddrsOffset",
+            4 => "startAddrsCoarseOffset",
+            5 => "modLfoToPitch",
+            6 => "vibLfoToPitch",
+            7 => "modEnvToPitch",
+            8 => "initialFilterFc",
+            9 => "initialFilterQ",
+            10 => "modLfoToFilterFc",
+            11 => "modEnvToFilterFc",
+            12 => "endAddrsCoarseOffset",
+            13 => "modLfoToVolume",
+            15 => "chorusEffectsSend",
+            16 => "reverbEffectsSend",
+            17 => "pan",
+            21 => "delayModLFO",
+            22 => "freqModLFO",
+            23 => "delayVibLFO",
+            24 => "freqVibLFO",
+            25 => "delayModEnv",
+            26 => "attackModEnv",
+            27 => "holdModEnv",
+            28 => "decayModEnv",
+            29 => "sustainModEnv",
+            30 => "releaseModEnv",
+            31 => "keynumToModEnvHold",
+            32 => "keynumToModEnvDecay",
+            33 => "delayVolEnv",
+            34 => "attackVolEnv",
+            35 => "holdVolEnv",
+            36 => "decayVolEnv",
+            37 => "sustainVolEnv",
+            38 => "releaseVolEnv",
+            39 => "keynumToVolEnvHold",
+            40 => "keynumToVolEnvDecay",
+            41 => "instrument",
+            43 => "keyRange",
+            44 => "velRange",
+            45 => "startloopAddrsCoarseOffset",
+            46 => "keynum",
+            47 => "velocity",
+            48 => "initialAttenuation",
+            50 => "endloopAddrsCoarseOffset",
+            51 => "coarseTune",
+            52 => "fineTune",
+            53 => "sampleID",
+            54 => "sampleModes",
+            56 => "scaleTuning",
+            57 => "exclusiveClass",
+            58 => "overridingRootKey",
+            _ => "unknown",
+        };
+
+    private static string FormatModulatorOperator(ushort value)
+    {
+        var sourceType = (value >> 10) & 0x3F;
+        var polarity = (value & 0x0200) != 0 ? "bipolar" : "unipolar";
+        var direction = (value & 0x0100) != 0 ? "negative" : "positive";
+        var isMidiController = (value & 0x0080) != 0;
+        var index = value & 0x007F;
+        var source = isMidiController
+            ? $"midi_cc_{index}"
+            : index switch
+            {
+                0 => "none",
+                2 => "noteOnVelocity",
+                3 => "noteOnKeyNumber",
+                10 => "polyPressure",
+                13 => "channelPressure",
+                14 => "pitchWheel",
+                16 => "pitchWheelSensitivity",
+                _ => $"general_{index}",
+            };
+
+        return $"0x{value:X4} {source} {polarity} {direction} type={sourceType}";
+    }
+
     private sealed class GeneratorValues
     {
-        public int StartAddrsOffset { get; private set; }
-        public int EndAddrsOffset { get; private set; }
-        public int StartLoopAddrsOffset { get; private set; }
-        public int EndLoopAddrsOffset { get; private set; }
-        public int StartAddrsCoarseOffset { get; private set; }
-        public int EndAddrsCoarseOffset { get; private set; }
-        public int StartLoopAddrsCoarseOffset { get; private set; }
-        public int EndLoopAddrsCoarseOffset { get; private set; }
-        public int KeyLow { get; private set; } = 0;
-        public int KeyHigh { get; private set; } = 127;
-        public int VelocityLow { get; private set; } = 0;
-        public int VelocityHigh { get; private set; } = 127;
+        private int? _startAddrsOffset;
+        private int? _endAddrsOffset;
+        private int? _startLoopAddrsOffset;
+        private int? _endLoopAddrsOffset;
+        private int? _startAddrsCoarseOffset;
+        private int? _endAddrsCoarseOffset;
+        private int? _startLoopAddrsCoarseOffset;
+        private int? _endLoopAddrsCoarseOffset;
+        private int? _keynum;
+        private int? _fixedVelocity;
+        private int? _keyLow;
+        private int? _keyHigh;
+        private int? _velocityLow;
+        private int? _velocityHigh;
+        private int? _initialAttenuationCentibels;
+        private int? _panTenthsPercent;
+        private int? _reverbEffectsSendTenthsPercent;
+        private int? _coarseTuneSemitones;
+        private int? _fineTuneCents;
+        private int? _sampleModes;
+        private int? _scaleTuningCentsPerKey;
+        private readonly List<SoundFontGeneratorDebug> _auditGenerators = [];
+
+        public int StartAddrsOffset => _startAddrsOffset ?? 0;
+        public int EndAddrsOffset => _endAddrsOffset ?? 0;
+        public int StartLoopAddrsOffset => _startLoopAddrsOffset ?? 0;
+        public int EndLoopAddrsOffset => _endLoopAddrsOffset ?? 0;
+        public int StartAddrsCoarseOffset => _startAddrsCoarseOffset ?? 0;
+        public int EndAddrsCoarseOffset => _endAddrsCoarseOffset ?? 0;
+        public int StartLoopAddrsCoarseOffset => _startLoopAddrsCoarseOffset ?? 0;
+        public int EndLoopAddrsCoarseOffset => _endLoopAddrsCoarseOffset ?? 0;
+        public int? Keynum => _keynum;
+        public int? FixedVelocity => _fixedVelocity;
+        public int KeyLow => _keyLow ?? 0;
+        public int KeyHigh => _keyHigh ?? 127;
+        public int VelocityLow => _velocityLow ?? 0;
+        public int VelocityHigh => _velocityHigh ?? 127;
         public int? SampleId { get; private set; }
-        public int InitialAttenuationCentibels { get; private set; }
-        public int PanTenthsPercent { get; private set; }
-        public int ReverbEffectsSendTenthsPercent { get; private set; }
-        public int CoarseTuneSemitones { get; private set; }
-        public int FineTuneCents { get; private set; }
-        public int SampleModes { get; private set; }
+        public int InitialAttenuationCentibels => _initialAttenuationCentibels ?? 0;
+        public int PanTenthsPercent => _panTenthsPercent ?? 0;
+        public int ReverbEffectsSendTenthsPercent => _reverbEffectsSendTenthsPercent ?? 0;
+        public int CoarseTuneSemitones => _coarseTuneSemitones ?? 0;
+        public int FineTuneCents => _fineTuneCents ?? 0;
+        public int SampleModes => _sampleModes ?? 0;
+        public int ScaleTuningCentsPerKey => _scaleTuningCentsPerKey ?? 100;
         public int? OverridingRootKey { get; private set; }
-        public int AttackVolEnvTimecents { get; private set; } = -12000;
-        public int HoldVolEnvTimecents { get; private set; } = -12000;
-        public int DecayVolEnvTimecents { get; private set; } = -12000;
-        public int SustainVolEnvCentibels { get; private set; }
-        public int ReleaseVolEnvTimecents { get; private set; } = -12000;
+        public int? AttackVolEnvTimecents { get; private set; }
+        public int? HoldVolEnvTimecents { get; private set; }
+        public int? DecayVolEnvTimecents { get; private set; }
+        public int? SustainVolEnvCentibels { get; private set; }
+        public int? ReleaseVolEnvTimecents { get; private set; }
 
         public void Apply(Sf2Generator generator, HashSet<string> warnings)
         {
             var signedAmount = unchecked((short)generator.Amount);
+            _auditGenerators.Add(new SoundFontGeneratorDebug(
+                generator.Operator,
+                GetGeneratorName(generator.Operator),
+                FormatRawGeneratorValue(generator.Operator, generator.Amount, signedAmount),
+                "raw"));
             switch (generator.Operator)
             {
                 case 0:
-                    StartAddrsOffset += signedAmount;
+                    Add(ref _startAddrsOffset, signedAmount);
                     break;
                 case 1:
-                    EndAddrsOffset += signedAmount;
+                    Add(ref _endAddrsOffset, signedAmount);
                     break;
                 case 2:
-                    StartLoopAddrsOffset += signedAmount;
+                    Add(ref _startLoopAddrsOffset, signedAmount);
                     break;
                 case 3:
-                    EndLoopAddrsOffset += signedAmount;
+                    Add(ref _endLoopAddrsOffset, signedAmount);
                     break;
                 case 4:
-                    StartAddrsCoarseOffset += signedAmount;
+                    Add(ref _startAddrsCoarseOffset, signedAmount);
                     break;
                 case 12:
-                    EndAddrsCoarseOffset += signedAmount;
+                    Add(ref _endAddrsCoarseOffset, signedAmount);
                     break;
                 case 17:
-                    PanTenthsPercent += signedAmount;
+                    Add(ref _panTenthsPercent, signedAmount);
                     break;
                 case 16:
-                    ReverbEffectsSendTenthsPercent += signedAmount;
+                    Add(ref _reverbEffectsSendTenthsPercent, signedAmount);
                     break;
                 case 43:
-                    KeyLow = generator.Amount & 0xFF;
-                    KeyHigh = generator.Amount >> 8;
+                    _keyLow = generator.Amount & 0xFF;
+                    _keyHigh = generator.Amount >> 8;
                     break;
                 case 44:
-                    VelocityLow = generator.Amount & 0xFF;
-                    VelocityHigh = generator.Amount >> 8;
+                    _velocityLow = generator.Amount & 0xFF;
+                    _velocityHigh = generator.Amount >> 8;
                     break;
                 case 45:
-                    StartLoopAddrsCoarseOffset += signedAmount;
+                    Add(ref _startLoopAddrsCoarseOffset, signedAmount);
                     break;
                 case 46:
-                    EndLoopAddrsCoarseOffset += signedAmount;
+                    _keynum = signedAmount;
+                    warnings.Add("SoundFont generator 46 (keynum) is imported for manifest audit only; fixed-key playback is not converted to WD playback.");
+                    break;
+                case 47:
+                    _fixedVelocity = signedAmount;
+                    warnings.Add("SoundFont generator 47 (velocity) is imported for manifest audit only; fixed-velocity playback is not converted to WD playback.");
                     break;
                 case 48:
-                    InitialAttenuationCentibels += signedAmount;
+                    Add(ref _initialAttenuationCentibels, signedAmount);
+                    break;
+                case 50:
+                    Add(ref _endLoopAddrsCoarseOffset, signedAmount);
                     break;
                 case 34:
-                    AttackVolEnvTimecents += signedAmount;
+                    AttackVolEnvTimecents = signedAmount;
                     break;
                 case 35:
-                    HoldVolEnvTimecents += signedAmount;
+                    HoldVolEnvTimecents = signedAmount;
                     break;
                 case 36:
-                    DecayVolEnvTimecents += signedAmount;
+                    DecayVolEnvTimecents = signedAmount;
                     break;
                 case 37:
-                    SustainVolEnvCentibels += signedAmount;
+                    SustainVolEnvCentibels = signedAmount;
                     break;
                 case 38:
-                    ReleaseVolEnvTimecents += signedAmount;
+                    ReleaseVolEnvTimecents = signedAmount;
                     break;
                 case 51:
-                    CoarseTuneSemitones += signedAmount;
+                    Add(ref _coarseTuneSemitones, signedAmount);
                     break;
                 case 52:
-                    FineTuneCents += signedAmount;
+                    Add(ref _fineTuneCents, signedAmount);
                     break;
                 case 54:
-                    SampleModes = generator.Amount;
+                    _sampleModes = generator.Amount;
+                    break;
+                case 56:
+                    _scaleTuningCentsPerKey = signedAmount;
                     break;
                 case 58:
                     OverridingRootKey = generator.Amount & 0xFF;
                     break;
                 case 13:
-                case 56:
                 case 57:
-                    warnings.Add($"Ignored SoundFont generator {generator.Operator} during conversion.");
+                    warnings.Add($"Ignored SoundFont generator {generator.Operator} ({GetGeneratorName(generator.Operator)}) during conversion.");
                     break;
                 default:
                     if (generator.Operator is not 41 and not 53)
                     {
-                        warnings.Add($"Ignored SoundFont generator {generator.Operator} during conversion.");
+                        warnings.Add($"Ignored SoundFont generator {generator.Operator} ({GetGeneratorName(generator.Operator)}) during conversion.");
                     }
 
                     break;
             }
         }
 
-        public static GeneratorValues Merge(GeneratorValues? baseValues, GeneratorValues? overlayValues)
+        public static GeneratorValues MergeWithinDomain(GeneratorValues? globalValues, GeneratorValues? localValues)
         {
             var merged = new GeneratorValues();
-            if (baseValues is not null)
+            if (globalValues is not null)
             {
-                CopyTo(baseValues, merged);
+                CopyTo(globalValues, merged);
             }
 
-            if (overlayValues is not null)
+            if (localValues is not null)
             {
-                merged.StartAddrsOffset += overlayValues.StartAddrsOffset;
-                merged.EndAddrsOffset += overlayValues.EndAddrsOffset;
-                merged.StartLoopAddrsOffset += overlayValues.StartLoopAddrsOffset;
-                merged.EndLoopAddrsOffset += overlayValues.EndLoopAddrsOffset;
-                merged.StartAddrsCoarseOffset += overlayValues.StartAddrsCoarseOffset;
-                merged.EndAddrsCoarseOffset += overlayValues.EndAddrsCoarseOffset;
-                merged.StartLoopAddrsCoarseOffset += overlayValues.StartLoopAddrsCoarseOffset;
-                merged.EndLoopAddrsCoarseOffset += overlayValues.EndLoopAddrsCoarseOffset;
-                merged.InitialAttenuationCentibels += overlayValues.InitialAttenuationCentibels;
-                merged.PanTenthsPercent += overlayValues.PanTenthsPercent;
-                merged.ReverbEffectsSendTenthsPercent += overlayValues.ReverbEffectsSendTenthsPercent;
-                merged.CoarseTuneSemitones += overlayValues.CoarseTuneSemitones;
-                merged.FineTuneCents += overlayValues.FineTuneCents;
-                merged.AttackVolEnvTimecents += overlayValues.AttackVolEnvTimecents;
-                merged.HoldVolEnvTimecents += overlayValues.HoldVolEnvTimecents;
-                merged.DecayVolEnvTimecents += overlayValues.DecayVolEnvTimecents;
-                merged.SustainVolEnvCentibels += overlayValues.SustainVolEnvCentibels;
-                merged.ReleaseVolEnvTimecents += overlayValues.ReleaseVolEnvTimecents;
-                merged.SampleModes = overlayValues.SampleModes != 0 ? overlayValues.SampleModes : merged.SampleModes;
-                merged.SampleId = overlayValues.SampleId ?? merged.SampleId;
-                merged.OverridingRootKey = overlayValues.OverridingRootKey ?? merged.OverridingRootKey;
-                merged.KeyLow = overlayValues.KeyLow;
-                merged.KeyHigh = overlayValues.KeyHigh;
-                merged.VelocityLow = overlayValues.VelocityLow;
-                merged.VelocityHigh = overlayValues.VelocityHigh;
+                OverrideIfSet(ref merged._startAddrsOffset, localValues._startAddrsOffset);
+                OverrideIfSet(ref merged._endAddrsOffset, localValues._endAddrsOffset);
+                OverrideIfSet(ref merged._startLoopAddrsOffset, localValues._startLoopAddrsOffset);
+                OverrideIfSet(ref merged._endLoopAddrsOffset, localValues._endLoopAddrsOffset);
+                OverrideIfSet(ref merged._startAddrsCoarseOffset, localValues._startAddrsCoarseOffset);
+                OverrideIfSet(ref merged._endAddrsCoarseOffset, localValues._endAddrsCoarseOffset);
+                OverrideIfSet(ref merged._startLoopAddrsCoarseOffset, localValues._startLoopAddrsCoarseOffset);
+                OverrideIfSet(ref merged._endLoopAddrsCoarseOffset, localValues._endLoopAddrsCoarseOffset);
+                OverrideIfSet(ref merged._keynum, localValues._keynum);
+                OverrideIfSet(ref merged._fixedVelocity, localValues._fixedVelocity);
+                OverrideIfSet(ref merged._initialAttenuationCentibels, localValues._initialAttenuationCentibels);
+                OverrideIfSet(ref merged._panTenthsPercent, localValues._panTenthsPercent);
+                OverrideIfSet(ref merged._reverbEffectsSendTenthsPercent, localValues._reverbEffectsSendTenthsPercent);
+                OverrideIfSet(ref merged._coarseTuneSemitones, localValues._coarseTuneSemitones);
+                OverrideIfSet(ref merged._fineTuneCents, localValues._fineTuneCents);
+                OverrideIfSet(ref merged._scaleTuningCentsPerKey, localValues._scaleTuningCentsPerKey);
+                merged.AttackVolEnvTimecents = localValues.AttackVolEnvTimecents ?? merged.AttackVolEnvTimecents;
+                merged.HoldVolEnvTimecents = localValues.HoldVolEnvTimecents ?? merged.HoldVolEnvTimecents;
+                merged.DecayVolEnvTimecents = localValues.DecayVolEnvTimecents ?? merged.DecayVolEnvTimecents;
+                merged.SustainVolEnvCentibels = localValues.SustainVolEnvCentibels ?? merged.SustainVolEnvCentibels;
+                merged.ReleaseVolEnvTimecents = localValues.ReleaseVolEnvTimecents ?? merged.ReleaseVolEnvTimecents;
+                OverrideIfSet(ref merged._sampleModes, localValues._sampleModes);
+                merged.SampleId = localValues.SampleId ?? merged.SampleId;
+                merged.OverridingRootKey = localValues.OverridingRootKey ?? merged.OverridingRootKey;
+                OverrideIfSet(ref merged._keyLow, localValues._keyLow);
+                OverrideIfSet(ref merged._keyHigh, localValues._keyHigh);
+                OverrideIfSet(ref merged._velocityLow, localValues._velocityLow);
+                OverrideIfSet(ref merged._velocityHigh, localValues._velocityHigh);
+                merged._auditGenerators.AddRange(localValues._auditGenerators);
             }
+
+            return merged;
+        }
+
+        public static GeneratorValues MergeAcrossDomains(GeneratorValues? presetValues, GeneratorValues? instrumentValues)
+        {
+            var merged = new GeneratorValues();
+            if (presetValues is not null)
+            {
+                CopyTo(presetValues, merged);
+            }
+
+            if (instrumentValues is not null)
+            {
+                merged._startAddrsOffset = (presetValues?.StartAddrsOffset ?? 0) + instrumentValues.StartAddrsOffset;
+                merged._endAddrsOffset = (presetValues?.EndAddrsOffset ?? 0) + instrumentValues.EndAddrsOffset;
+                merged._startLoopAddrsOffset = (presetValues?.StartLoopAddrsOffset ?? 0) + instrumentValues.StartLoopAddrsOffset;
+                merged._endLoopAddrsOffset = (presetValues?.EndLoopAddrsOffset ?? 0) + instrumentValues.EndLoopAddrsOffset;
+                merged._startAddrsCoarseOffset = (presetValues?.StartAddrsCoarseOffset ?? 0) + instrumentValues.StartAddrsCoarseOffset;
+                merged._endAddrsCoarseOffset = (presetValues?.EndAddrsCoarseOffset ?? 0) + instrumentValues.EndAddrsCoarseOffset;
+                merged._startLoopAddrsCoarseOffset = (presetValues?.StartLoopAddrsCoarseOffset ?? 0) + instrumentValues.StartLoopAddrsCoarseOffset;
+                merged._endLoopAddrsCoarseOffset = (presetValues?.EndLoopAddrsCoarseOffset ?? 0) + instrumentValues.EndLoopAddrsCoarseOffset;
+                merged._keynum = instrumentValues._keynum ?? presetValues?._keynum;
+                merged._fixedVelocity = instrumentValues._fixedVelocity ?? presetValues?._fixedVelocity;
+                merged._initialAttenuationCentibels = (presetValues?.InitialAttenuationCentibels ?? 0) + instrumentValues.InitialAttenuationCentibels;
+                merged._panTenthsPercent = (presetValues?.PanTenthsPercent ?? 0) + instrumentValues.PanTenthsPercent;
+                merged._reverbEffectsSendTenthsPercent = (presetValues?.ReverbEffectsSendTenthsPercent ?? 0) + instrumentValues.ReverbEffectsSendTenthsPercent;
+                merged._coarseTuneSemitones = (presetValues?.CoarseTuneSemitones ?? 0) + instrumentValues.CoarseTuneSemitones;
+                merged._fineTuneCents = (presetValues?.FineTuneCents ?? 0) + instrumentValues.FineTuneCents;
+                merged._scaleTuningCentsPerKey = Math.Clamp((instrumentValues._scaleTuningCentsPerKey ?? 100) + (presetValues?._scaleTuningCentsPerKey ?? 0), 0, 1200);
+                merged._sampleModes = instrumentValues._sampleModes ?? presetValues?._sampleModes ?? 0;
+                merged.SampleId = instrumentValues.SampleId ?? merged.SampleId;
+                merged.OverridingRootKey = instrumentValues.OverridingRootKey ?? merged.OverridingRootKey;
+                merged._keyLow = Math.Max(presetValues?.KeyLow ?? 0, instrumentValues.KeyLow);
+                merged._keyHigh = Math.Min(presetValues?.KeyHigh ?? 127, instrumentValues.KeyHigh);
+                merged._velocityLow = Math.Max(presetValues?.VelocityLow ?? 0, instrumentValues.VelocityLow);
+                merged._velocityHigh = Math.Min(presetValues?.VelocityHigh ?? 127, instrumentValues.VelocityHigh);
+                merged._auditGenerators.AddRange(instrumentValues._auditGenerators);
+            }
+            else
+            {
+                merged._scaleTuningCentsPerKey = Math.Clamp((presetValues?._scaleTuningCentsPerKey ?? 0) + 100, 0, 1200);
+                merged._sampleModes = presetValues?._sampleModes ?? 0;
+                merged._keynum = presetValues?._keynum;
+                merged._fixedVelocity = presetValues?._fixedVelocity;
+            }
+
+            merged.AttackVolEnvTimecents = (instrumentValues?.AttackVolEnvTimecents ?? -12000) + (presetValues?.AttackVolEnvTimecents ?? 0);
+            merged.HoldVolEnvTimecents = (instrumentValues?.HoldVolEnvTimecents ?? -12000) + (presetValues?.HoldVolEnvTimecents ?? 0);
+            merged.DecayVolEnvTimecents = (instrumentValues?.DecayVolEnvTimecents ?? -12000) + (presetValues?.DecayVolEnvTimecents ?? 0);
+            merged.SustainVolEnvCentibels = (instrumentValues?.SustainVolEnvCentibels ?? 0) + (presetValues?.SustainVolEnvCentibels ?? 0);
+            merged.ReleaseVolEnvTimecents = (instrumentValues?.ReleaseVolEnvTimecents ?? -12000) + (presetValues?.ReleaseVolEnvTimecents ?? 0);
 
             return merged;
         }
 
         private static void CopyTo(GeneratorValues source, GeneratorValues destination)
         {
-            destination.StartAddrsOffset = source.StartAddrsOffset;
-            destination.EndAddrsOffset = source.EndAddrsOffset;
-            destination.StartLoopAddrsOffset = source.StartLoopAddrsOffset;
-            destination.EndLoopAddrsOffset = source.EndLoopAddrsOffset;
-            destination.StartAddrsCoarseOffset = source.StartAddrsCoarseOffset;
-            destination.EndAddrsCoarseOffset = source.EndAddrsCoarseOffset;
-            destination.StartLoopAddrsCoarseOffset = source.StartLoopAddrsCoarseOffset;
-            destination.EndLoopAddrsCoarseOffset = source.EndLoopAddrsCoarseOffset;
-            destination.KeyLow = source.KeyLow;
-            destination.KeyHigh = source.KeyHigh;
-            destination.VelocityLow = source.VelocityLow;
-            destination.VelocityHigh = source.VelocityHigh;
+            destination._startAddrsOffset = source._startAddrsOffset;
+            destination._endAddrsOffset = source._endAddrsOffset;
+            destination._startLoopAddrsOffset = source._startLoopAddrsOffset;
+            destination._endLoopAddrsOffset = source._endLoopAddrsOffset;
+            destination._startAddrsCoarseOffset = source._startAddrsCoarseOffset;
+            destination._endAddrsCoarseOffset = source._endAddrsCoarseOffset;
+            destination._startLoopAddrsCoarseOffset = source._startLoopAddrsCoarseOffset;
+            destination._endLoopAddrsCoarseOffset = source._endLoopAddrsCoarseOffset;
+            destination._keynum = source._keynum;
+            destination._fixedVelocity = source._fixedVelocity;
+            destination._keyLow = source._keyLow;
+            destination._keyHigh = source._keyHigh;
+            destination._velocityLow = source._velocityLow;
+            destination._velocityHigh = source._velocityHigh;
             destination.SampleId = source.SampleId;
-            destination.InitialAttenuationCentibels = source.InitialAttenuationCentibels;
-            destination.PanTenthsPercent = source.PanTenthsPercent;
-            destination.ReverbEffectsSendTenthsPercent = source.ReverbEffectsSendTenthsPercent;
-            destination.CoarseTuneSemitones = source.CoarseTuneSemitones;
-            destination.FineTuneCents = source.FineTuneCents;
+            destination._initialAttenuationCentibels = source._initialAttenuationCentibels;
+            destination._panTenthsPercent = source._panTenthsPercent;
+            destination._reverbEffectsSendTenthsPercent = source._reverbEffectsSendTenthsPercent;
+            destination._coarseTuneSemitones = source._coarseTuneSemitones;
+            destination._fineTuneCents = source._fineTuneCents;
+            destination._sampleModes = source._sampleModes;
+            destination._scaleTuningCentsPerKey = source._scaleTuningCentsPerKey;
+            destination._auditGenerators.Clear();
+            destination._auditGenerators.AddRange(source._auditGenerators);
             destination.AttackVolEnvTimecents = source.AttackVolEnvTimecents;
             destination.HoldVolEnvTimecents = source.HoldVolEnvTimecents;
             destination.DecayVolEnvTimecents = source.DecayVolEnvTimecents;
             destination.SustainVolEnvCentibels = source.SustainVolEnvCentibels;
             destination.ReleaseVolEnvTimecents = source.ReleaseVolEnvTimecents;
-            destination.SampleModes = source.SampleModes;
             destination.OverridingRootKey = source.OverridingRootKey;
         }
+
+        private static void Add(ref int? target, int amount)
+        {
+            target = (target ?? 0) + amount;
+        }
+
+        private static void OverrideIfSet(ref int? target, int? source)
+        {
+            if (source.HasValue)
+            {
+                target = source.Value;
+            }
+        }
+
+        public IReadOnlyList<SoundFontGeneratorDebug> ToDebugGenerators()
+        {
+            var output = new List<SoundFontGeneratorDebug>(_auditGenerators);
+            AddDebug(output, 0, _startAddrsOffset);
+            AddDebug(output, 1, _endAddrsOffset);
+            AddDebug(output, 2, _startLoopAddrsOffset);
+            AddDebug(output, 3, _endLoopAddrsOffset);
+            AddDebug(output, 4, _startAddrsCoarseOffset);
+            AddDebug(output, 12, _endAddrsCoarseOffset);
+            AddDebug(output, 45, _startLoopAddrsCoarseOffset);
+            AddDebug(output, 50, _endLoopAddrsCoarseOffset);
+            if (_keyLow.HasValue || _keyHigh.HasValue)
+            {
+                output.Add(new SoundFontGeneratorDebug(43, GetGeneratorName(43), $"{KeyLow}-{KeyHigh}"));
+            }
+
+            if (_velocityLow.HasValue || _velocityHigh.HasValue)
+            {
+                output.Add(new SoundFontGeneratorDebug(44, GetGeneratorName(44), $"{VelocityLow}-{VelocityHigh}"));
+            }
+
+            AddDebug(output, 46, _keynum, "audit-only");
+            AddDebug(output, 47, _fixedVelocity, "audit-only");
+            AddDebug(output, 48, _initialAttenuationCentibels, "centibels");
+            AddDebug(output, 16, _reverbEffectsSendTenthsPercent, "0.1%");
+            AddDebug(output, 17, _panTenthsPercent, "0.1%");
+            AddDebug(output, 51, _coarseTuneSemitones, "semitones");
+            AddDebug(output, 52, _fineTuneCents, "cents");
+            AddDebug(output, 54, _sampleModes);
+            AddDebug(output, 56, _scaleTuningCentsPerKey, "cents/key");
+            AddDebug(output, 58, OverridingRootKey);
+            AddDebug(output, 34, AttackVolEnvTimecents, "timecents");
+            AddDebug(output, 35, HoldVolEnvTimecents, "timecents");
+            AddDebug(output, 36, DecayVolEnvTimecents, "timecents");
+            AddDebug(output, 37, SustainVolEnvCentibels, "centibels");
+            AddDebug(output, 38, ReleaseVolEnvTimecents, "timecents");
+            return output;
+        }
+
+        private static void AddDebug(List<SoundFontGeneratorDebug> output, int op, int? value, string unit = "")
+        {
+            if (!value.HasValue)
+            {
+                return;
+            }
+
+            var valueText = unit.Length == 0
+                ? value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : $"{value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)} {unit}";
+            output.Add(new SoundFontGeneratorDebug(op, GetGeneratorName(op), valueText));
+        }
+
+        private static string FormatRawGeneratorValue(ushort op, ushort unsignedValue, short signedValue)
+            => op switch
+            {
+                43 or 44 => $"{unsignedValue & 0xFF}-{unsignedValue >> 8}",
+                _ => $"signed={signedValue.ToString(System.Globalization.CultureInfo.InvariantCulture)} unsigned=0x{unsignedValue:X4}",
+            };
     }
 
     private sealed record Sf2PresetHeader(string Name, int Program, int Bank, int BagIndex);
@@ -1151,9 +1555,38 @@ internal static class SoundFontParser
 
     private sealed record Sf2Generator(ushort Operator, ushort Amount);
 
-    private sealed record Sf2PresetZone(int? InstrumentIndex, GeneratorValues Values);
+    private sealed record Sf2Modulator(
+        ushort SourceOperator,
+        ushort DestinationOperator,
+        short Amount,
+        ushort AmountSourceOperator,
+        ushort TransformOperator)
+    {
+        public bool IsTerminal =>
+            SourceOperator == 0 &&
+            DestinationOperator == 0 &&
+            Amount == 0 &&
+            AmountSourceOperator == 0 &&
+            TransformOperator == 0;
 
-    private sealed record Sf2InstrumentZone(int? SampleId, GeneratorValues Values);
+        public SoundFontModulatorDebug ToDebug(string domain, string zoneKind, int index)
+            => new(
+                domain,
+                zoneKind,
+                index,
+                SourceOperator,
+                FormatModulatorOperator(SourceOperator),
+                DestinationOperator,
+                GetGeneratorName(DestinationOperator),
+                Amount,
+                AmountSourceOperator,
+                FormatModulatorOperator(AmountSourceOperator),
+                TransformOperator);
+    }
+
+    private sealed record Sf2PresetZone(int? InstrumentIndex, GeneratorValues Values, IReadOnlyList<SoundFontModulatorDebug> Modulators);
+
+    private sealed record Sf2InstrumentZone(int? SampleId, GeneratorValues Values, IReadOnlyList<SoundFontModulatorDebug> Modulators);
 
     private sealed record Sf2SampleHeader(
         int Index,
@@ -1177,7 +1610,11 @@ internal static class SoundFontParser
         short[]? SecondaryPcm,
         int SampleRate,
         int? SecondarySampleRate,
-        LoopDescriptor LoopDescriptor)
+        LoopDescriptor LoopDescriptor,
+        int ResolvedStart,
+        int ResolvedEnd,
+        int ResolvedLoopStart,
+        int ResolvedLoopEnd)
     {
         public bool Looping => LoopDescriptor.Looping;
 
@@ -1209,6 +1646,45 @@ internal sealed record SoundFontImportOptions(double PreEqStrength, double Manua
     public static SoundFontImportOptions Default { get; } = new(0.0, 0.0, false);
 }
 
+internal sealed record SoundFontRegionDebug(
+    int SampleIndex,
+    string SampleName,
+    int ShdrStart,
+    int ShdrEnd,
+    int ShdrStartLoop,
+    int ShdrEndLoop,
+    int ShdrSampleRate,
+    int ShdrOriginalPitch,
+    int ShdrPitchCorrectionCents,
+    int ShdrSampleLink,
+    int ShdrSampleType,
+    int ResolvedStart,
+    int ResolvedEnd,
+    int ResolvedLoopStart,
+    int ResolvedLoopEnd,
+    bool ResolvedLooping,
+    IReadOnlyList<SoundFontGeneratorDebug> ResolvedGenerators,
+    IReadOnlyList<SoundFontModulatorDebug> Modulators);
+
+internal sealed record SoundFontGeneratorDebug(
+    int Operator,
+    string Name,
+    string Value,
+    string Kind = "resolved");
+
+internal sealed record SoundFontModulatorDebug(
+    string Domain,
+    string ZoneKind,
+    int Index,
+    int SourceOperator,
+    string SourceOperatorDescription,
+    int DestinationOperator,
+    string DestinationOperatorName,
+    int Amount,
+    int AmountSourceOperator,
+    string AmountSourceOperatorDescription,
+    int TransformOperator);
+
 internal sealed record SoundFontRegion(
     int PresetBank,
     int PresetProgram,
@@ -1234,7 +1710,8 @@ internal sealed record SoundFontRegion(
     int SampleRate,
     LoopDescriptor LoopDescriptor,
     short[] Pcm,
-    short[]? StereoPcm)
+    short[]? StereoPcm,
+    SoundFontRegionDebug Debug)
 {
     public bool Looping => LoopDescriptor.Looping;
 
