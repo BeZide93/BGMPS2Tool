@@ -8,6 +8,11 @@ internal static class SoundFontParser
     private const int DefaultInitialFilterFcCents = 13_500;
     private const int MinInitialFilterFcCents = 1_500;
     private const int MaxInitialFilterFcCents = 13_500;
+    private const int PitchAnalysisMinSamples = 64;
+    private const int PitchAnalysisMaxSamples = 4096;
+    private const double PitchAnalysisMinHz = 27.5;
+    private const double PitchAnalysisMaxHz = 4_000.0;
+    private const double PitchAnalysisMinCorrelation = 0.20;
 
     public static SoundFontFile Parse(string path, SoundFontImportOptions? importOptions = null)
     {
@@ -438,7 +443,7 @@ internal static class SoundFontParser
 
         if (output.Count > 0)
         {
-            warnings.Add("SoundFont modulators (pmod/imod) are imported for manifest/debug audit only; dynamic modulation is not converted to WD playback.");
+            warnings.Add("SoundFont modulators (pmod/imod) are imported; constant-source modulators are baked statically, while dynamic modulation is not converted to WD playback.");
         }
 
         return output;
@@ -489,6 +494,8 @@ internal static class SoundFontParser
             return null;
         }
 
+        values.ApplyStaticModulators(modulators, warnings);
+
         var monoSlice = ExtractSampleSlice(sample, values, sampleHeaders, sampleData, warnings);
         if (monoSlice is null || monoSlice.Pcm.Length == 0)
         {
@@ -500,9 +507,10 @@ internal static class SoundFontParser
         monoSlice = ApplyInitialFilterBake(monoSlice, initialFilter, warnings);
         var debug = CreateRegionDebug(sample, values, monoSlice, modulators);
 
+        var resolvedSamplePitch = ResolveSamplePitch(sample, values, monoSlice, warnings);
         var samplePitch = new SamplePitchComponents(
-            sample.OriginalPitch,
-            sample.PitchCorrection,
+            resolvedSamplePitch.OriginalPitch,
+            resolvedSamplePitch.PitchCorrectionCents,
             monoSlice.SampleRate,
             0.0,
             0.0);
@@ -522,7 +530,8 @@ internal static class SoundFontParser
         volume *= ComputeDryMixFromReverbSend(reverbSend);
         var pan = Math.Clamp(values.PanTenthsPercent / 500.0f, -1f, 1f);
         var attackSeconds = TimecentsToSeconds(values.AttackVolEnvTimecents ?? -12000);
-        var holdSeconds = TimecentsToSeconds(values.HoldVolEnvTimecents ?? -12000);
+        var delaySeconds = TimecentsToSeconds(values.DelayVolEnvTimecents ?? -12000);
+        var holdSeconds = delaySeconds + TimecentsToSeconds(values.HoldVolEnvTimecents ?? -12000);
         var decaySeconds = TimecentsToSeconds(values.DecayVolEnvTimecents ?? -12000);
         var sustainLevel = Math.Clamp((float)Math.Pow(10.0, -Math.Max(0, values.SustainVolEnvCentibels ?? 0) / 200.0), 0f, 1f);
         var releaseSeconds = TimecentsToSeconds(values.ReleaseVolEnvTimecents ?? -12000);
@@ -582,6 +591,184 @@ internal static class SoundFontParser
             slice.LoopDescriptor.Looping,
             values.ToDebugGenerators(),
             modulators);
+
+    private static (int OriginalPitch, int PitchCorrectionCents) ResolveSamplePitch(
+        Sf2SampleHeader sample,
+        GeneratorValues values,
+        ExtractedSampleSlice slice,
+        HashSet<string> warnings)
+    {
+        if (sample.OriginalPitch is >= 0 and <= 127)
+        {
+            return (sample.OriginalPitch, sample.PitchCorrection);
+        }
+
+        if (values.OverridingRootKey is >= 0 and <= 127)
+        {
+            warnings.Add(
+                $"SoundFont sample '{sample.Name}' has invalid shdr originalPitch={sample.OriginalPitch}; using overridingRootKey={values.OverridingRootKey.Value} as fallback root.");
+            return (values.OverridingRootKey.Value, 0);
+        }
+
+        if (TryEstimatePitchFromLoopBody(slice, out var estimatedRootKey, out var estimatedFineTuneCents))
+        {
+            warnings.Add(
+                $"SoundFont sample '{sample.Name}' has invalid shdr originalPitch={sample.OriginalPitch}; using loop-body pitch fallback root={estimatedRootKey} fine={estimatedFineTuneCents:+#;-#;0}c.");
+            return (estimatedRootKey, estimatedFineTuneCents);
+        }
+
+        warnings.Add(
+            $"SoundFont sample '{sample.Name}' has invalid shdr originalPitch={sample.OriginalPitch}; falling back to root=60 fine=0.");
+        return (60, 0);
+    }
+
+    private static bool TryEstimatePitchFromLoopBody(ExtractedSampleSlice slice, out int rootKey, out int fineTuneCents)
+    {
+        rootKey = 60;
+        fineTuneCents = 0;
+        if (slice.Pcm.Length < PitchAnalysisMinSamples || slice.SampleRate <= 0)
+        {
+            return false;
+        }
+
+        var analysis = SelectPitchAnalysisWindow(slice);
+        if (analysis.Length < PitchAnalysisMinSamples)
+        {
+            return false;
+        }
+
+        return TryEstimatePitchFromWindow(analysis, slice.SampleRate, out rootKey, out fineTuneCents);
+    }
+
+    private static ReadOnlySpan<short> SelectPitchAnalysisWindow(ExtractedSampleSlice slice)
+    {
+        var pcm = slice.Pcm;
+        if (pcm.Length == 0)
+        {
+            return ReadOnlySpan<short>.Empty;
+        }
+
+        if (slice.Looping)
+        {
+            var loopStart = Math.Clamp(slice.LoopStartSample, 0, Math.Max(0, pcm.Length - 1));
+            var loopLength = slice.LoopDescriptor.ResolveLengthSamples(pcm.Length);
+            var loopEnd = Math.Clamp(loopStart + Math.Max(1, loopLength), loopStart + 1, pcm.Length);
+            var loopBodyLength = loopEnd - loopStart;
+            if (loopBodyLength >= PitchAnalysisMinSamples)
+            {
+                var windowLength = Math.Min(PitchAnalysisMaxSamples, loopBodyLength);
+                var windowStart = loopEnd - windowLength;
+                return new ReadOnlySpan<short>(pcm, windowStart, windowLength);
+            }
+        }
+
+        var fallbackLength = Math.Min(PitchAnalysisMaxSamples, pcm.Length);
+        var fallbackStart = pcm.Length - fallbackLength;
+        return new ReadOnlySpan<short>(pcm, fallbackStart, fallbackLength);
+    }
+
+    private static bool TryEstimatePitchFromWindow(ReadOnlySpan<short> pcm, int sampleRate, out int rootKey, out int fineTuneCents)
+    {
+        rootKey = 60;
+        fineTuneCents = 0;
+        if (pcm.Length < PitchAnalysisMinSamples || sampleRate <= 0)
+        {
+            return false;
+        }
+
+        var mean = 0.0;
+        for (var index = 0; index < pcm.Length; index++)
+        {
+            mean += pcm[index];
+        }
+
+        mean /= pcm.Length;
+
+        var energy = 0.0;
+        for (var index = 0; index < pcm.Length; index++)
+        {
+            var centered = pcm[index] - mean;
+            energy += centered * centered;
+        }
+
+        if (energy <= 1e-6)
+        {
+            return false;
+        }
+
+        var minLag = Math.Max(2, (int)Math.Floor(sampleRate / PitchAnalysisMaxHz));
+        var maxLag = Math.Min(pcm.Length / 2, Math.Max(minLag + 1, (int)Math.Ceiling(sampleRate / PitchAnalysisMinHz)));
+        if (maxLag <= minLag)
+        {
+            return false;
+        }
+
+        var bestLag = 0;
+        var bestScore = double.NegativeInfinity;
+        for (var lag = minLag; lag <= maxLag; lag++)
+        {
+            double correlation = 0.0;
+            double leftEnergy = 0.0;
+            double rightEnergy = 0.0;
+            var length = pcm.Length - lag;
+            for (var index = 0; index < length; index++)
+            {
+                var left = pcm[index] - mean;
+                var right = pcm[index + lag] - mean;
+                correlation += left * right;
+                leftEnergy += left * left;
+                rightEnergy += right * right;
+            }
+
+            if (leftEnergy <= 1e-9 || rightEnergy <= 1e-9)
+            {
+                continue;
+            }
+
+            var normalizedCorrelation = correlation / Math.Sqrt(leftEnergy * rightEnergy);
+            if (normalizedCorrelation > bestScore)
+            {
+                bestScore = normalizedCorrelation;
+                bestLag = lag;
+            }
+        }
+
+        if (bestLag <= 0 || bestScore < PitchAnalysisMinCorrelation)
+        {
+            return false;
+        }
+
+        var frequencyHz = sampleRate / (double)bestLag;
+        if (frequencyHz <= 0.0 || double.IsNaN(frequencyHz) || double.IsInfinity(frequencyHz))
+        {
+            return false;
+        }
+
+        var rootNote = 69.0 + (12.0 * Math.Log(frequencyHz / 440.0, 2.0));
+        if (double.IsNaN(rootNote) || double.IsInfinity(rootNote))
+        {
+            return false;
+        }
+
+        rootNote = Math.Clamp(rootNote, 0.0, 127.0);
+        rootKey = (int)Math.Round(rootNote, MidpointRounding.AwayFromZero);
+        fineTuneCents = (int)Math.Round((rootNote - rootKey) * 100.0, MidpointRounding.AwayFromZero);
+        while (fineTuneCents > 50 && rootKey < 127)
+        {
+            rootKey++;
+            fineTuneCents -= 100;
+        }
+
+        while (fineTuneCents < -50 && rootKey > 0)
+        {
+            rootKey--;
+            fineTuneCents += 100;
+        }
+
+        rootKey = Math.Clamp(rootKey, 0, 127);
+        fineTuneCents = Math.Clamp(fineTuneCents, -50, 50);
+        return true;
+    }
 
     private static int DetermineReferenceSampleRate(IReadOnlyList<Sf2SampleHeader> sampleHeaders)
     {
@@ -1291,6 +1478,7 @@ internal static class SoundFontParser
         public int ScaleTuningCentsPerKey => _scaleTuningCentsPerKey ?? 100;
         public int? OverridingRootKey { get; private set; }
         public int? AttackVolEnvTimecents { get; private set; }
+        public int? DelayVolEnvTimecents { get; private set; }
         public int? HoldVolEnvTimecents { get; private set; }
         public int? DecayVolEnvTimecents { get; private set; }
         public int? SustainVolEnvCentibels { get; private set; }
@@ -1361,6 +1549,9 @@ internal static class SoundFontParser
                 case 34:
                     AttackVolEnvTimecents = signedAmount;
                     break;
+                case 33:
+                    DelayVolEnvTimecents = signedAmount;
+                    break;
                 case 35:
                     HoldVolEnvTimecents = signedAmount;
                     break;
@@ -1402,6 +1593,84 @@ internal static class SoundFontParser
             }
         }
 
+        public void ApplyStaticModulators(IReadOnlyList<SoundFontModulatorDebug> modulators, HashSet<string> warnings)
+        {
+            var applied = false;
+            foreach (var modulator in modulators)
+            {
+                if (!IsConstantSource(modulator.SourceOperator) ||
+                    !IsConstantSource(modulator.AmountSourceOperator) ||
+                    modulator.TransformOperator != 0)
+                {
+                    continue;
+                }
+
+                switch (modulator.DestinationOperator)
+                {
+                    case 8:
+                        Add(ref _initialFilterFcCents, modulator.Amount);
+                        applied = true;
+                        break;
+                    case 16:
+                        Add(ref _reverbEffectsSendTenthsPercent, modulator.Amount);
+                        applied = true;
+                        break;
+                    case 17:
+                        Add(ref _panTenthsPercent, modulator.Amount);
+                        applied = true;
+                        break;
+                    case 33:
+                        DelayVolEnvTimecents = (DelayVolEnvTimecents ?? 0) + modulator.Amount;
+                        applied = true;
+                        break;
+                    case 34:
+                        AttackVolEnvTimecents = (AttackVolEnvTimecents ?? 0) + modulator.Amount;
+                        applied = true;
+                        break;
+                    case 35:
+                        HoldVolEnvTimecents = (HoldVolEnvTimecents ?? 0) + modulator.Amount;
+                        applied = true;
+                        break;
+                    case 36:
+                        DecayVolEnvTimecents = (DecayVolEnvTimecents ?? 0) + modulator.Amount;
+                        applied = true;
+                        break;
+                    case 37:
+                        SustainVolEnvCentibels = (SustainVolEnvCentibels ?? 0) + modulator.Amount;
+                        applied = true;
+                        break;
+                    case 38:
+                        ReleaseVolEnvTimecents = (ReleaseVolEnvTimecents ?? 0) + modulator.Amount;
+                        applied = true;
+                        break;
+                    case 48:
+                        Add(ref _initialAttenuationCentibels, modulator.Amount);
+                        applied = true;
+                        break;
+                    case 51:
+                        Add(ref _coarseTuneSemitones, modulator.Amount);
+                        applied = true;
+                        break;
+                    case 52:
+                        Add(ref _fineTuneCents, modulator.Amount);
+                        applied = true;
+                        break;
+                }
+            }
+
+            if (applied)
+            {
+                warnings.Add("Applied static SF2 modulators (constant source) into region generator values before WD conversion.");
+            }
+        }
+
+        private static bool IsConstantSource(int sourceOperator)
+        {
+            var isMidiController = (sourceOperator & 0x0080) != 0;
+            var sourceIndex = sourceOperator & 0x007F;
+            return !isMidiController && sourceIndex == 0;
+        }
+
         public static GeneratorValues MergeWithinDomain(GeneratorValues? globalValues, GeneratorValues? localValues)
         {
             var merged = new GeneratorValues();
@@ -1430,6 +1699,7 @@ internal static class SoundFontParser
                 OverrideIfSet(ref merged._fineTuneCents, localValues._fineTuneCents);
                 OverrideIfSet(ref merged._scaleTuningCentsPerKey, localValues._scaleTuningCentsPerKey);
                 merged.AttackVolEnvTimecents = localValues.AttackVolEnvTimecents ?? merged.AttackVolEnvTimecents;
+                merged.DelayVolEnvTimecents = localValues.DelayVolEnvTimecents ?? merged.DelayVolEnvTimecents;
                 merged.HoldVolEnvTimecents = localValues.HoldVolEnvTimecents ?? merged.HoldVolEnvTimecents;
                 merged.DecayVolEnvTimecents = localValues.DecayVolEnvTimecents ?? merged.DecayVolEnvTimecents;
                 merged.SustainVolEnvCentibels = localValues.SustainVolEnvCentibels ?? merged.SustainVolEnvCentibels;
@@ -1507,6 +1777,7 @@ internal static class SoundFontParser
             }
 
             merged.AttackVolEnvTimecents = (instrumentValues?.AttackVolEnvTimecents ?? -12000) + (presetValues?.AttackVolEnvTimecents ?? 0);
+            merged.DelayVolEnvTimecents = (instrumentValues?.DelayVolEnvTimecents ?? -12000) + (presetValues?.DelayVolEnvTimecents ?? 0);
             merged.HoldVolEnvTimecents = (instrumentValues?.HoldVolEnvTimecents ?? -12000) + (presetValues?.HoldVolEnvTimecents ?? 0);
             merged.DecayVolEnvTimecents = (instrumentValues?.DecayVolEnvTimecents ?? -12000) + (presetValues?.DecayVolEnvTimecents ?? 0);
             merged.SustainVolEnvCentibels = (instrumentValues?.SustainVolEnvCentibels ?? 0) + (presetValues?.SustainVolEnvCentibels ?? 0);
@@ -1543,6 +1814,7 @@ internal static class SoundFontParser
             destination._auditGenerators.Clear();
             destination._auditGenerators.AddRange(source._auditGenerators);
             destination.AttackVolEnvTimecents = source.AttackVolEnvTimecents;
+            destination.DelayVolEnvTimecents = source.DelayVolEnvTimecents;
             destination.HoldVolEnvTimecents = source.HoldVolEnvTimecents;
             destination.DecayVolEnvTimecents = source.DecayVolEnvTimecents;
             destination.SustainVolEnvCentibels = source.SustainVolEnvCentibels;
@@ -1596,6 +1868,7 @@ internal static class SoundFontParser
             AddDebug(output, 56, _scaleTuningCentsPerKey, "cents/key");
             AddDebug(output, 58, OverridingRootKey);
             AddDebug(output, 34, AttackVolEnvTimecents, "timecents");
+            AddDebug(output, 33, DelayVolEnvTimecents, "timecents");
             AddDebug(output, 35, HoldVolEnvTimecents, "timecents");
             AddDebug(output, 36, DecayVolEnvTimecents, "timecents");
             AddDebug(output, 37, SustainVolEnvCentibels, "centibels");

@@ -866,6 +866,7 @@ internal static class PsxAdpcmEncoder
     private static readonly int[] Coefficients1 = [0, 0, -52, -55, -60];
     private const int LookaheadCandidateCount = 4;
     private const double LookaheadWeight = 0.6;
+    public const double DefaultErrorFeedbackScale = 0.75;
 
     public static byte[] Encode(short[] pcmSamples, bool looping, int loopStartBytes)
         => Encode(
@@ -874,14 +875,46 @@ internal static class PsxAdpcmEncoder
                 ? LoopDescriptor.FromPsxAdpcmBytes(true, loopStartBytes, Math.Max(0, PsxAdpcmLoopMath.SamplesToBytes(pcmSamples.Length) - loopStartBytes))
                 : LoopDescriptor.None);
 
-    public static byte[] Encode(short[] pcmSamples, LoopDescriptor loopDescriptor)
+    public static byte[] Encode(
+        short[] pcmSamples,
+        LoopDescriptor loopDescriptor,
+        bool strictLoopAlignment = false,
+        double errorFeedbackScale = DefaultErrorFeedbackScale)
     {
         var blockCount = Math.Max(1, (pcmSamples.Length + 27) / 28);
         var output = new byte[blockCount * 0x10];
+        if (strictLoopAlignment)
+        {
+            ValidateStrictLoopAlignment(pcmSamples, loopDescriptor);
+        }
+
         var normalizedLoop = PsxAdpcmLoopMath.NormalizeToPsxAdpcmBytes(loopDescriptor, pcmSamples.Length);
         var loopStartBlock = normalizedLoop.Looping
             ? Math.Clamp(normalizedLoop.Start / 0x10, 0, Math.Max(0, blockCount - 1))
             : 0;
+        errorFeedbackScale = Math.Clamp(errorFeedbackScale, 0.0, 1.0);
+        var blocks = EncodeBlocksStandard(pcmSamples, blockCount, normalizedLoop.Looping, loopStartBlock, errorFeedbackScale);
+        if (normalizedLoop.Looping && loopStartBlock > 0 && loopStartBlock < blockCount - 1)
+        {
+            blocks = EncodeLoopSectionForWrappedState(pcmSamples, blocks, blockCount, loopStartBlock, errorFeedbackScale);
+        }
+
+        for (var blockIndex = 0; blockIndex < blockCount; blockIndex++)
+        {
+            WriteEncodedBlock(output, blockIndex, blockCount, blocks[blockIndex], normalizedLoop.Looping, loopStartBlock);
+        }
+
+        return output;
+    }
+
+    private static EncodedPsxBlock[] EncodeBlocksStandard(
+        short[] pcmSamples,
+        int blockCount,
+        bool looping,
+        int loopStartBlock,
+        double errorFeedbackScale)
+    {
+        var blocks = new EncodedPsxBlock[blockCount];
         var previous1 = 0;
         var previous2 = 0;
 
@@ -891,7 +924,7 @@ internal static class PsxAdpcmEncoder
         {
             LoadBlock(pcmSamples, blockIndex, source);
 
-            var hasNextBlock = blockIndex + 1 < blockCount || (normalizedLoop.Looping && blockCount > 1);
+            var hasNextBlock = blockIndex + 1 < blockCount || (looping && blockCount > 1);
             if (hasNextBlock)
             {
                 var nextBlockIndex = blockIndex + 1 < blockCount
@@ -903,31 +936,110 @@ internal static class PsxAdpcmEncoder
             var isSilentBlock = IsEffectivelySilentBlock(source);
             var block = isSilentBlock
                 ? CreateSilentBlock()
-                : EncodeBlock(source, hasNextBlock ? nextSource : [], previous1, previous2);
+                : EncodeBlock(source, hasNextBlock ? nextSource : [], previous1, previous2, errorFeedbackScale);
+            blocks[blockIndex] = block;
             previous1 = block.LastSample1;
             previous2 = block.LastSample2;
-
-            var outputOffset = blockIndex * 0x10;
-            output[outputOffset] = (byte)((block.Filter << 4) | block.Shift);
-            var flag = normalizedLoop.Looping ? 0x2 : 0x0;
-            if (normalizedLoop.Looping && blockIndex == loopStartBlock)
-            {
-                flag |= 0x4;
-            }
-
-            if (blockIndex == blockCount - 1)
-            {
-                flag |= 0x1;
-            }
-
-            output[outputOffset + 1] = (byte)flag;
-            for (var i = 0; i < 14; i++)
-            {
-                output[outputOffset + 2 + i] = block.Payload[i];
-            }
         }
 
-        return output;
+        return blocks;
+    }
+
+    private static EncodedPsxBlock[] EncodeLoopSectionForWrappedState(
+        short[] pcmSamples,
+        EncodedPsxBlock[] standardBlocks,
+        int blockCount,
+        int loopStartBlock,
+        double errorFeedbackScale)
+    {
+        var optimized = (EncodedPsxBlock[])standardBlocks.Clone();
+        var wrapPrevious1 = standardBlocks[^1].LastSample1;
+        var wrapPrevious2 = standardBlocks[^1].LastSample2;
+
+        Span<int> source = stackalloc int[28];
+        Span<int> nextSource = stackalloc int[28];
+        for (var iteration = 0; iteration < 4; iteration++)
+        {
+            var previous1 = wrapPrevious1;
+            var previous2 = wrapPrevious2;
+            var loopBlocks = new EncodedPsxBlock[blockCount - loopStartBlock];
+            for (var blockIndex = loopStartBlock; blockIndex < blockCount; blockIndex++)
+            {
+                LoadBlock(pcmSamples, blockIndex, source);
+                var nextBlockIndex = blockIndex + 1 < blockCount
+                    ? blockIndex + 1
+                    : loopStartBlock;
+                LoadBlock(pcmSamples, nextBlockIndex, nextSource);
+
+                var isSilentBlock = IsEffectivelySilentBlock(source);
+                var block = isSilentBlock
+                    ? CreateSilentBlock()
+                    : EncodeBlock(source, nextSource, previous1, previous2, errorFeedbackScale);
+                loopBlocks[blockIndex - loopStartBlock] = block;
+                previous1 = block.LastSample1;
+                previous2 = block.LastSample2;
+            }
+
+            Array.Copy(loopBlocks, 0, optimized, loopStartBlock, loopBlocks.Length);
+            if (previous1 == wrapPrevious1 && previous2 == wrapPrevious2)
+            {
+                break;
+            }
+
+            wrapPrevious1 = previous1;
+            wrapPrevious2 = previous2;
+        }
+
+        return optimized;
+    }
+
+    private static void WriteEncodedBlock(byte[] output, int blockIndex, int blockCount, EncodedPsxBlock block, bool looping, int loopStartBlock)
+    {
+        var outputOffset = blockIndex * 0x10;
+        output[outputOffset] = (byte)((block.Filter << 4) | block.Shift);
+        var flag = looping ? 0x2 : 0x0;
+        if (looping && blockIndex == loopStartBlock)
+        {
+            flag |= 0x4;
+        }
+
+        if (blockIndex == blockCount - 1)
+        {
+            flag |= 0x1;
+        }
+
+        output[outputOffset + 1] = (byte)flag;
+        for (var i = 0; i < 14; i++)
+        {
+            output[outputOffset + 2 + i] = block.Payload[i];
+        }
+    }
+
+    private static void ValidateStrictLoopAlignment(short[] pcmSamples, LoopDescriptor loopDescriptor)
+    {
+        if (!loopDescriptor.Looping)
+        {
+            return;
+        }
+
+        if (pcmSamples.Length == 0)
+        {
+            throw new InvalidOperationException("Strict PSX ADPCM loop encoding requires non-empty PCM data.");
+        }
+
+        var normalized = loopDescriptor.NormalizeToSamples(pcmSamples.Length);
+        var loopStartSamples = normalized.ResolveStartSamples(pcmSamples.Length);
+        var loopLengthSamples = normalized.ResolveLengthSamples(pcmSamples.Length);
+        var loopEndSamples = loopStartSamples + loopLengthSamples;
+        if (loopStartSamples % 28 != 0 ||
+            loopEndSamples % 28 != 0 ||
+            pcmSamples.Length % 28 != 0 ||
+            loopEndSamples != pcmSamples.Length)
+        {
+            throw new InvalidOperationException(
+                $"Strict PSX ADPCM loop encoding requires 28-sample aligned loop start/end and sample length. " +
+                $"Got start={loopStartSamples}, end={loopEndSamples}, length={pcmSamples.Length}.");
+        }
     }
 
     private static bool IsEffectivelySilentBlock(ReadOnlySpan<int> source)
@@ -952,9 +1064,14 @@ internal static class PsxAdpcmEncoder
         }
     }
 
-    private static EncodedPsxBlock EncodeBlock(ReadOnlySpan<int> source, ReadOnlySpan<int> nextSource, int previous1, int previous2)
+    private static EncodedPsxBlock EncodeBlock(
+        ReadOnlySpan<int> source,
+        ReadOnlySpan<int> nextSource,
+        int previous1,
+        int previous2,
+        double errorFeedbackScale)
     {
-        var candidates = GetBestLocalCandidates(source, previous1, previous2);
+        var candidates = GetBestLocalCandidates(source, previous1, previous2, errorFeedbackScale);
         var primaryCandidate = candidates[0] ?? throw new InvalidOperationException("Failed to encode PSX ADPCM block.");
         if (nextSource.Length == 0)
         {
@@ -970,7 +1087,7 @@ internal static class PsxAdpcmEncoder
                 continue;
             }
 
-            var score = candidate.Error + (FindBestNextError(nextSource, candidate.LastSample1, candidate.LastSample2) * LookaheadWeight);
+            var score = candidate.Error + (FindBestNextError(nextSource, candidate.LastSample1, candidate.LastSample2, errorFeedbackScale) * LookaheadWeight);
             if (best is null || score < bestScore)
             {
                 best = candidate;
@@ -981,14 +1098,18 @@ internal static class PsxAdpcmEncoder
         return best ?? throw new InvalidOperationException("Failed to encode PSX ADPCM block.");
     }
 
-    private static EncodedPsxBlock?[] GetBestLocalCandidates(ReadOnlySpan<int> source, int previous1, int previous2)
+    private static EncodedPsxBlock?[] GetBestLocalCandidates(
+        ReadOnlySpan<int> source,
+        int previous1,
+        int previous2,
+        double errorFeedbackScale)
     {
         var bestCandidates = new EncodedPsxBlock?[LookaheadCandidateCount];
         for (var filter = 0; filter <= 4; filter++)
         {
             for (var shift = 0; shift <= 12; shift++)
             {
-                var candidate = TryEncodeBlock(source, previous1, previous2, filter, shift);
+                var candidate = TryEncodeBlock(source, previous1, previous2, filter, shift, errorFeedbackScale);
                 InsertCandidate(bestCandidates, candidate);
             }
         }
@@ -996,14 +1117,14 @@ internal static class PsxAdpcmEncoder
         return bestCandidates;
     }
 
-    private static long FindBestNextError(ReadOnlySpan<int> source, int previous1, int previous2)
+    private static long FindBestNextError(ReadOnlySpan<int> source, int previous1, int previous2, double errorFeedbackScale)
     {
         long bestError = long.MaxValue;
         for (var filter = 0; filter <= 4; filter++)
         {
             for (var shift = 0; shift <= 12; shift++)
             {
-                var candidate = TryEncodeBlock(source, previous1, previous2, filter, shift);
+                var candidate = TryEncodeBlock(source, previous1, previous2, filter, shift, errorFeedbackScale);
                 if (candidate.Error < bestError)
                 {
                     bestError = candidate.Error;
@@ -1032,7 +1153,13 @@ internal static class PsxAdpcmEncoder
         }
     }
 
-    private static EncodedPsxBlock TryEncodeBlock(ReadOnlySpan<int> source, int previous1, int previous2, int filter, int shift)
+    private static EncodedPsxBlock TryEncodeBlock(
+        ReadOnlySpan<int> source,
+        int previous1,
+        int previous2,
+        int filter,
+        int shift,
+        double errorFeedbackScale)
     {
         var coef0 = Coefficients0[filter];
         var coef1 = Coefficients1[filter];
@@ -1045,7 +1172,7 @@ internal static class PsxAdpcmEncoder
         for (var index = 0; index < 28; index++)
         {
             var prediction = ((coef0 * sample1) + (coef1 * sample2)) >> 6;
-            var target = source[index] + (feedbackError * 0.75);
+            var target = source[index] + (feedbackError * errorFeedbackScale);
             var scaled = (target - prediction) * (1 << shift) / 4096.0;
             var nibble = (int)Math.Round(scaled, MidpointRounding.AwayFromZero);
             nibble = Math.Clamp(nibble, -8, 7);

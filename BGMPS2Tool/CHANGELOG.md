@@ -1,5 +1,203 @@
 # CHANGELOG
 
+## v0.9.22 - 2026-04-13
+
+### Changed
+
+- added `sf2_loop_end_content_align` as a safe-policy test toggle; when enabled, looped SF2 samples can be prefixed with up to 27 silent samples so the original loop end lands on a 28-sample WD/PSX-ADPCM block
+- added `advanced-auto-loop` as a fourth `sf2_loop_policy` mode; it keeps the auto-loop search self-contained, but biases candidates toward the original SF2 loop start/end window instead of only preferring the end of the sample
+- the GUI config dropdown now exposes `advanced-auto-loop`, and the config panel now exposes the new `sf2_loop_end_content_align` checkbox
+- loop manifests now expose `LoopEndContentPrefixSamples` so end-content alignment is visible during A/B tests
+
+## v0.9.21 - 2026-04-12
+
+### Changed
+
+- added `sf2_loop_start_content_align` as a config/GUI toggle for the default `safe` MIDI/SF2 loop policy
+- when enabled, safe-mode loop preparation moves the real SF2 loop-start body content onto the WD 28-sample loop-start block instead of looping earlier pre-loop waveform material
+- packaged defaults now use `sf2_loop_start_content_align=1` and `sf2_loop_tail_wrap_fill=0`, keeping the quieter v0.9.2-style loop path while targeting the trumpet-style block-start click directly
+- loop diagnostics now expose `LoopStartContentShiftSamples` so manifests show when this content alignment changed the effective loop body
+
+## v0.9.20 - 2026-04-12
+
+### Changed
+
+- added `sf2_loop_tail_wrap_fill` as a config/GUI toggle for looped MIDI/SF2 samples whose final PCM length does not end on a 28-sample PSX-ADPCM frame boundary
+- when enabled, the MIDI/SF2 encoder fills that final partial ADPCM frame with samples from the loop start instead of letting the encoder zero-pad the missing samples
+- this is intended as a controlled listening-test path for trumpet-style loop crackle; set `sf2_loop_tail_wrap_fill=0` to return to the previous tail behavior
+
+## v0.9.19 - 2026-04-12
+
+### Changed
+
+- `sf2_loop_micro_crossfade=1` now uses the same conservative decoded-ADPCM score gate as the successful auto-loop crackle fix
+- safe/advanced loop policies only keep a micro-crossfade if a copied candidate improves the decoded PSX-ADPCM wrap score; otherwise the PCM remains untouched
+- this keeps the default `safe` path unchanged while making the optional micro-crossfade switch safer for controlled loop-crackle tests
+
+## v0.9.18 - 2026-04-12
+
+### Fixed
+
+- rolled back the aggressive `auto-loop` v0.9.17 candidate-selection changes that could make loop crackle much worse
+- `auto-loop` now chooses loop points with the stable pre-crossfade scorer again, then applies only a small Polyphone-style crossfade if the decoded PSX-ADPCM wrap score improves
+- removed the direct loop-start crossfade branch and large crossfade window from auto-loop because those could over-smooth the loop tail and make artifacts louder
+
+## v0.9.17 - 2026-04-12
+
+### Changed
+
+- `sf2_loop_policy=auto-loop` is now fully self-contained and no longer falls back into the `safe` loop-preparation path when the primary auto-loop search fails
+- auto-loop now applies a Polyphone-inspired loop-end crossfade internally instead of relying on the separate `sf2_loop_micro_crossfade` option
+- auto-loop candidate scoring now evaluates the post-crossfade decoded PSX-ADPCM wrap so the selected loop point is chosen after smoothing, not before it
+- the auto-loop crossfade stage compares Polyphone-style pre-loop blending with direct loop-start blending and keeps the version that improves the decoded ADPCM wrap
+
+## v0.9.16 - 2026-04-12
+
+### Fixed
+
+- `sf2_loop_policy=auto-loop` no longer applies loop-length pitch compensation after selecting new loop points
+- auto-loop now follows the Polyphone-style behavior more closely: it changes the loop window, but does not retune RootKey/FineTune just because the selected loop length differs from the original SF2 loop length
+
+## v0.9.15 - 2026-04-12
+
+### Fixed
+
+- `sf2_loop_policy=auto-loop` no longer fails while writing the MIDI/SF2 manifest with the `.NET number values such as positive and negative infinity cannot be written as valid JSON` error
+- loop RMS/error diagnostics now square sample deltas as `double` values instead of overflowing intermediate `int` math on harsh loop candidates
+- loop diagnostic values are sanitized before being written to the manifest so extreme candidate scores cannot break JSON serialization
+
+## v0.9.14 - 2026-04-12
+
+### Added
+
+- `sf2_loop_policy` config/GUI dropdown with three selectable MIDI/SF2 loop preparation modes:
+  - `safe`: patched `v0.9.2` loop path with deterministic loop-length pitch compensation
+  - `advanced`: the current decoded-ADPCM loop scoring path from the recent live builds
+  - `auto-loop`: ignores imported SF2 loop points for looped samples and searches new 28-sample-aligned loop points from the end of the sample
+- the GUI Advanced/config page now explains the loop policy choices directly next to the dropdown
+
+### Changed
+
+- `safe` is now the default loop path again, so normal rebuilds prioritize the quieter patched `v0.9.2` behavior over the newer experimental loop-end scoring stack
+- adaptive tonal-loop ADPCM feedback selection is gated away from `safe` mode, keeping that path closer to the known-good v0.9.2-style output
+- `auto-loop` borrows the Polyphone-style idea of scoring loop seam quality and loop length, but constrains candidates to WD/PSX 28-sample frame boundaries and prefers end-side candidates instead of early-loop starts
+
+## v0.9.13 - 2026-04-12
+
+### Changed
+
+- looped non-percussion MIDI/SF2 samples now test multiple PSX-ADPCM error-feedback strengths during final encode and pick the candidate with the best decoded loop-wrap score
+- one-shot samples and percussion-bank samples keep the previous default ADPCM feedback behavior, so drum transients are not pulled into the tonal-loop experiment
+- authored MIDI/SF2 manifests now expose `AdpcmErrorFeedbackScale` in loop diagnostics, making it visible when a sample used the safer default path or a reduced-feedback tonal-loop encode
+
+### Fixed
+
+- the `152` trumpet loop now chooses a lower-feedback ADPCM encode when it improves the decoded wrap, while `0/24 Nylon` and `0/32 ACBass` automatically stay on the safer default when reduced feedback would worsen the loop score
+
+## v0.9.12 - 2026-04-12
+
+### Fixed
+
+- medium-short loop smoothing now covers the same 512-sample range as short-loop pitch-safe alignment, instead of only loops up to three ADPCM frames
+- `0/24 Nylon` (`A001100.WAV`) now treats its 28-sample ADPCM loop extension as a real loop-length change and applies loop pitch compensation, removing the hidden tail-padding path that could produce a steady loop-period hum
+
+## v0.9.11 - 2026-04-12
+
+### Fixed
+
+- long-loop selection now avoids aggressive early trim points when a nearby forward `bridge_tail` candidate has comparable overall score, acceptable decoded-wrap error, and lower decoded state mismatch
+- the `152` trumpet loop now defaults to the forward alignment bridge (`end +13`) instead of cutting the loop end back by 43 samples, addressing the louder-click regression from `v0.9.10`
+
+## v0.9.10 - 2026-04-12
+
+### Added
+
+- MIDI/SF2 loop diagnostics now include per-sample loop-end candidate details in the manifest, including selected strategy, end shift, combined score, PCM seam RMS, decoded ADPCM wrap RMS, and decoded state-mismatch RMS
+
+### Changed
+
+- non-28-aligned SF2 loop ends now also test `bridge_tail` candidates that synthesize only the missing alignment samples between the SF2 loop end and the next PSX ADPCM frame boundary
+- long-loop scoring now balances decoded ADPCM wrap, decoded state mismatch, PCM seam continuity, slope, distance, and candidate strategy more conservatively so a low wrap score does not hide a much worse seam
+
+### Fixed
+
+- bridge-tail candidates are no longer filtered out when the SF2 PCM is already trimmed at the original loop end; this lets trumpet-style loops test the forward aligned endpoint instead of only earlier trim points
+
+## v0.9.9 - 2026-04-12
+
+### Changed
+
+- long looping SF2 samples now choose the final WD/PSX loop end from nearby 28-sample-aligned candidates using PCM seam, decoded ADPCM stateful-wrap, decoded state-mismatch, slope, distance, and zero-crossing scoring
+- looped PSX ADPCM encoding now re-encodes the loop body against the loop-end predictor state in a small loop-only pass, while one-shot samples stay on the old encoder path
+- loop-tail padding is now a fallback instead of the normal path for long loops such as `LttP GBA Euro Trump`, reducing cases where the encoder had to append duplicated loop-start samples before wrapping
+
+### Fixed
+
+- `sf2_loop_micro_crossfade=0` now fully disables micro-crossfade behavior; the previous auto-fallback path could still apply a tiny crossfade on high-error loops even when the config toggle was off
+- the `music152.mid + wave0152.sf2` trumpet loop no longer lands on the partial ADPCM tail-padding path; the manifest now reports the trumpet loop with zero tail padding and much lower decoded stateful-wrap RMS
+
+## v0.9.8 - 2026-04-12
+
+### Added
+
+- loop candidate scoring now simulates the PSX-ADPCM wrap state: the loop-start block is decoded again using the predictor history from the loop end, matching the stateful behavior that can cause clicks or hiss in-game
+- loop diagnostics now report both decoded ADPCM stateful-wrap RMS and decoded state-mismatch RMS, making predictor-state loop artifacts easier to identify separately from PCM loop continuity
+
+### Changed
+
+- short-loop candidate selection now prioritizes stateful ADPCM wrap continuity, then penalizes decoded state mismatch, while keeping PCM continuity, slope, distance, and zero-crossing checks as secondary tie-breakers
+- TODO, thread handoff, and risk register were updated to mark stateful loop-wrap scoring as the current active loop path and keep later predictor/state encoder optimization as the next controlled-risk item
+
+## v0.9.7 - 2026-04-12
+
+### Added
+
+- loop candidate scoring now evaluates the real decoded PSX-ADPCM loop transition: each short-loop candidate is encoded, decoded again, and scored against the actual decoded wrap point instead of relying only on pre-encode PCM continuity
+- MIDI/SF2 loop diagnostics now include the final decoded-ADPCM loop RMS in the conversion log and per-region manifest diagnostics
+
+### Changed
+
+- short-loop candidate selection keeps the existing end-preferred/nearby-aligned search, but now weights decoded ADPCM continuity first, with PCM continuity, slope, distance, and zero-crossing checks as secondary tie-breakers
+- `TODO.md`, `THREAD_HANDOFF.md`, and `RISK_REGISTER.md` were refreshed so the current loop/ADPCM risks and next fidelity work are explicit for future debugging
+
+## v0.9.6 - 2026-04-12
+
+### Fixed
+
+- pitch-bend workaround is now strictly config-controlled again: `midi_pitch_bend_workaround=0` keeps bend retargeting off, while `=1` enables it
+- even with `midi_pitch_bend_workaround=1`, bend retargeting now only activates when the MIDI actually contains pitch-bend events
+- percussion safety guard added for bend handling: effective percussion banks (for example `128/0`) no longer retarget note keys on bend, preventing drum kit sounds from being remapped
+
+### Changed
+
+- `delayVolEnv` (`generator 33`) is now consumed in the SF2 envelope path and folded into the region hold stage (delay + hold timing)
+- constant-source SF2 modulators (`pmod/imod`) are now baked statically into supported generator targets during import; dynamic modulators remain non-playback/audit-only
+- loop diagnostics now differentiate explicit micro-crossfade usage from auto-fallback crossfades in the log/manifest summaries
+
+## v0.9.4 - 2026-04-12
+
+### Changed
+
+- restored the safe `v0.9.2` default loop-preparation behavior after the experimental 28-sample start/end search made some MIDI/SF2 conversions sound worse
+- MIDI/SF2 loop diagnostics remain in the manifest, but default authoring no longer moves loop ends or uses strict loop-aligned encoding unless a later explicit experiment re-enables that path
+- kept the low-risk shared Square/WD fine-tune encode path and raw pitch-byte manifest diagnostics
+- kept `sf2_loop_micro_crossfade=0` as a disabled-by-default config/GUI option for later controlled testing
+
+## v0.9.3 - 2026-04-12
+
+### Added
+
+- MIDI/SF2 authoring now records loop-alignment diagnostics in the manifest, including original/aligned loop start and end samples, start/end shifts, before/after loop-continuity RMS error, and whether micro-crossfade was applied
+- added `sf2_loop_micro_crossfade` as an optional `config.ini`/GUI toggle for auto-applying a tiny PCM crossfade only on high-error looping SoundFont samples
+- MIDI/SF2 pitch manifests now expose the raw WD `UnityKey` and `FineTune` bytes alongside decoded cents and quantization error
+
+### Changed
+
+- looping SoundFont samples are now pre-aligned in PCM before PSX ADPCM encoding by choosing 28-sample-compatible loop start/end points near the original SF2 loop, with waveform continuity and nearby zero-crossings used as tie-breakers
+- MIDI/SF2 ADPCM encoding now runs in strict loop-alignment mode, so loop start/end/sample length must already be 28-sample aligned before encode instead of being silently rounded during loop-byte conversion
+- WD pitch writing now routes through the shared Square/WD fine-tune table path for both MIDI/SF2 and WAV rebuild workflows
+- bundled `tracklist.txt` has been refreshed to the newer track metadata list
+
 ## v0.9.2 - 2026-04-11
 
 ### Fixed

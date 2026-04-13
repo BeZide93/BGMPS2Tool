@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.9.2`
+Version: `v0.9.22`
 
 <picture>
  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/BeZide93/BGMPS2Tool/blob/main/Icon.png">
@@ -40,6 +40,10 @@ Current hard caps:
 The MIDI/BGM rebuild path now also trims per-track padding aggressively. The tool still writes the track-size table and, for looped builds, preserves the original KH2 track-slot structure, but it no longer pads every track back up to the original template slot length if those bytes are unused.
 
 Short-loop handling on tricky MIDI/SF2 material has also been re-balanced again so the current loop/pitch behavior stays much closer to the good `v0.6.67` sound on tracks like `152`, while still keeping the newer ADSR controls and diagnostics.
+
+MIDI/SF2 loop preparation is now selectable through `sf2_loop_policy` in `config.ini` and the GUI config dropdown. The default is `safe`, which uses the patched `v0.9.2` loop path with deterministic pitch compensation. `advanced` keeps the recent decoded-ADPCM loop scoring experiments available for A/B tests, `auto-loop` ignores imported SF2 loop points for looped samples and searches new WD-friendly 28-sample-aligned loop points from the end of the sample, and `advanced-auto-loop` searches new 28-sample loop points near the original SF2 loop window.
+
+In `advanced` mode, looped non-percussion MIDI/SF2 samples can also use an adaptive PSX-ADPCM encode check: the tool tests the normal feedback path plus reduced-feedback tonal-loop candidates, then keeps the candidate with the best decoded loop-wrap score. One-shots, percussion-bank samples, and the default `safe` loop path stay on the default encoder path, and the chosen feedback scale is written into each loop diagnostic manifest entry.
 
 The MIDI/SF2 pitch path now also keeps a single canonical `UnityKey/FineTune` representation internally, so tiny residual pitch offsets are less likely to cause unnecessary retuning on random instruments.
 
@@ -89,6 +93,58 @@ The `v0.9.2` rebuild path fixes GM drum-channel handling:
 - MIDI channel 10, internally `channel == 9`, now resolves bank-0 program notes through SoundFont percussion bank `128` when available
 - this keeps GM-style drum parts such as `128/0` key `39` clap from being authored as melodic `0/0 Piano`
 - MIDI/SF2 source preview and WD authoring now use the same percussion preset decision
+
+The `v0.9.4` rebuild path keeps the safe `v0.9.2` loop sound by default while retaining the useful diagnostics from the loop-alignment experiment:
+
+- default MIDI/SF2 loop preparation is back on the conservative `v0.9.2` behavior after the experimental 28-sample start/end search proved too risky for some material
+- loop diagnostics are still written into the MIDI/SF2 manifest, including original/effective loop points, start/end shifts, before/after continuity error, and micro-crossfade status
+- `sf2_loop_micro_crossfade=1` remains available as a disabled-by-default test option for difficult loop clicks, but the packaged default is `0`
+- as of `v0.9.19`, that optional micro-crossfade path first tests a copied PCM candidate and only keeps it when the decoded PSX-ADPCM loop-wrap score improves, so enabling the switch no longer blindly rewrites loop tails
+- as of `v0.9.20`, `sf2_loop_tail_wrap_fill=1` can fill a looped sample's final partial 28-sample ADPCM frame from the loop start instead of leaving that partial tail as encoder zero-padding
+- as of `v0.9.21`, `sf2_loop_start_content_align=1` is the new safe-mode default; it keeps the WD loop-start block aligned but moves the actual SF2 loop body content onto that block so playback does not repeatedly jump back into earlier pre-loop waveform material
+- as of `v0.9.22`, `sf2_loop_end_content_align=1` can prepend a tiny silent prefix so the original SF2 loop end lands on a 28-sample WD block, and `sf2_loop_policy=advanced-auto-loop` searches auto-loop candidates closest to the original SF2 loop window
+- WD pitch writing uses the shared Square/WD fine-tune table path consistently and exposes raw WD pitch bytes plus quantization error in the manifest
+
+The `v0.9.6` rebuild path tightens the newer MIDI/SF2 fixes while restoring explicit pitch-bend control:
+
+- pitch-bend retargeting is now config-controlled again through `midi_pitch_bend_workaround`, and it only runs when the input MIDI actually contains bend events
+- percussion paths are protected from bend key-retargeting so drum kits like `128/0` do not shift to wrong instruments on bend activity
+- `delayVolEnv` (`generator 33`) is now consumed by the import envelope path (delay + hold timing), instead of being ignored
+- constant-source SF2 modulators are now baked statically into supported generator targets, while dynamic modulators still remain debug/audit-only for WD playback
+
+The `v0.9.7` rebuild path improves loop diagnostics and short-loop candidate selection:
+
+- short-loop candidates are now scored after an actual PSX-ADPCM encode/decode roundtrip, so the chosen loop point is judged against the decoded in-game-style loop transition rather than only against pre-encode PCM continuity
+- conversion logs and MIDI/SF2 manifests now expose the final decoded-ADPCM loop RMS, making loop-click/pitch problems easier to separate from SF2, pitch, ADSR, or region-mapping issues
+- this is intentionally not a full global ADPCM encoder rewrite; loop-specific predictor/state optimization remains a later controlled-risk task
+
+The `v0.9.8` rebuild path tightens that loop scoring around the PSX-ADPCM predictor state:
+
+- the loop-start block is now decoded again using the predictor history from the loop end, which better models the actual stateful hardware wrap instead of comparing only the first-pass decoded loop-start samples
+- short-loop candidate scoring now uses this stateful-wrap RMS first and also penalizes decoded state mismatch, reducing cases where a loop looks numerically smooth but still clicks, hisses, or rasps when the ADPCM predictor history changes at the wrap
+- conversion logs and MIDI/SF2 manifests now distinguish decoded ADPCM stateful-wrap RMS from decoded state-mismatch RMS
+
+The `v0.9.9` rebuild path extends the loop fix to longer SF2 loops such as the `152` trumpet case:
+
+- long loop ends are now selected from nearby 28-sample-aligned candidates using the actual decoded ADPCM wrap score instead of falling into implicit tail-padding whenever the SF2 loop end is not block-aligned
+- looped ADPCM samples get a loop-only predictor-state encode pass so the repeated loop body is judged against the loop-end history; one-shot samples still use the old encoder path
+- `sf2_loop_micro_crossfade=0` now fully disables crossfade behavior, so micro-crossfade remains an explicit opt-in test knob
+
+The `v0.9.10` rebuild path adds safer loop-end candidate visibility and bridge testing:
+
+- MIDI/SF2 manifests now list the loop-end candidates considered for each prepared loop, including the selected strategy and the PCM/decoded-ADPCM scoring values
+- non-28-aligned SF2 loop ends can test a tiny `bridge_tail` candidate that fills only the missing ADPCM alignment samples, instead of forcing the solver to choose only an earlier trim point
+- the long-loop score now balances PCM seam continuity and decoded state mismatch more strongly, which is intended to reduce trumpet-style clicks or buzz that survive a low decoded-wrap score
+
+The `v0.9.11` rebuild path adds a safety guard for audible loop-trim regressions:
+
+- if the numerically best long-loop candidate cuts the loop end back aggressively, the solver can prefer a nearby forward `bridge_tail` candidate when it keeps the score close and lowers decoded state mismatch
+- this specifically prevents the `152` trumpet case from defaulting to the harsher `trim -43` loop-end choice
+
+The `v0.9.12` rebuild path tightens medium-short loop pitch handling:
+
+- short-loop tail smoothing now covers the full 512-sample pitch-safe loop range, so medium-short loops such as `0/24 Nylon` also get pitch compensation when ADPCM block alignment extends the loop
+- this removes the hidden tail-padding path for `A001100.WAV`, which is a likely source of steady loop-period hum
 
 ## Included Files
 

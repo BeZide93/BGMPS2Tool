@@ -1,6 +1,6 @@
 # HOWTO
 
-Version: `v0.9.2`
+Version: `v0.9.4`
 
 ## Goal
 
@@ -78,6 +78,8 @@ sf2_bank_mode=used
 sf2_pre_eq=0.0
 sf2_pre_lowpass_hz=0
 sf2_auto_lowpass=0
+sf2_loop_policy=safe
+sf2_loop_micro_crossfade=0
 midi_program_compaction=preserve
 adsr=authored
 midi_pitch_bend_workaround=1
@@ -95,6 +97,8 @@ Meaning:
 - `sf2_pre_eq`: optional tone shaping for imported SoundFont sample data at the preserved stored sample rate
 - `sf2_pre_lowpass_hz`: optional manual low-pass cutoff for imported SoundFont sample data before PS2 encoding
 - `sf2_auto_lowpass`: auto low-pass explicitly resampled SoundFont samples near their original bandwidth
+- `sf2_loop_policy`: chooses loop preparation for MIDI/SF2 samples; `safe` is the patched v0.9.2 default, `advanced` keeps decoded-ADPCM scoring available, and `auto-loop` searches new 28-sample-aligned loop points
+- `sf2_loop_micro_crossfade`: optional auto-fallback for high-error looping SoundFont samples; disabled by default because the aggressive loop-alignment experiment was rolled back
 - `midi_program_compaction`: controls whether sparse MIDI program numbers stay sparse in the authored WD or get renumbered densely
 - `adsr`: controls whether MIDI/SF2 ADSR uses the VGMTrans-style authored path, the hybrid auto path, or template WD ADSR
 - `midi_pitch_bend_workaround`: enables or disables the current pitch bend approximation system for the MIDI/SF2 workflow
@@ -108,6 +112,8 @@ Notes:
 - `hold_minutes` mainly affects the older WAV replacement path
 - `sf2_volume=1.0` is recommended if you want the closest possible `SF2 -> WD -> SF2` roundtrip fidelity
 - `sf2_bank_mode=used` is the normal mode for MIDI-driven rebuilds
+- `sf2_loop_policy=safe` is the safest default for listening tests because it uses the patched v0.9.2 loop path and keeps the newer loop-scoring experiments opt-in
+- `sf2_loop_micro_crossfade=0` is the safest default; enable it only for controlled testing when a specific loop still clicks or buzzes
 - `sf2_bank_mode=full` is useful if you mainly want the `SF2 -> WD` conversion, including unused presets, for pairing with existing `BGM` files
 - `midi_program_compaction=preserve` is the conservative packaged default for keeping original-style sparse WD instrument slots during compatibility testing
 - the authored ADSR path now follows the same `PSXSPU` / `RateTable` timing model used by `VGMTrans`, so it is much closer to real KH2 export ADSR behavior than the older heuristic

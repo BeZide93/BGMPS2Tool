@@ -26,6 +26,11 @@ internal sealed partial class MainForm
     private readonly NumericUpDown _sf2PreEqUpDown = CreateDecimalUpDown(0m, 1m, 0m, 3, 0.01m);
     private readonly NumericUpDown _sf2PreLowPassUpDown = CreateDecimalUpDown(0m, 20_000m, 0m, 0, 100m);
     private readonly CheckBox _sf2AutoLowPassCheckBox = new() { Text = "Enable" };
+    private readonly ComboBox _sf2LoopPolicyComboBox = CreateComboBox("safe", "advanced", "auto-loop", "advanced-auto-loop");
+    private readonly CheckBox _sf2LoopMicroCrossfadeCheckBox = new() { Text = "Enable" };
+    private readonly CheckBox _sf2LoopTailWrapFillCheckBox = new() { Text = "Enable" };
+    private readonly CheckBox _sf2LoopStartContentAlignCheckBox = new() { Text = "Enable" };
+    private readonly CheckBox _sf2LoopEndContentAlignCheckBox = new() { Text = "Enable" };
     private readonly ComboBox _midiProgramCompactionComboBox = CreateComboBox("auto", "compact", "preserve");
     private readonly ComboBox _adsrModeComboBox = CreateComboBox("authored", "auto", "template");
     private readonly CheckBox _midiPitchWorkaroundCheckBox = new() { Text = "Enable" };
@@ -321,10 +326,15 @@ internal sealed partial class MainForm
         AddConfigRow(layout, 2, "sf2_pre_eq", _sf2PreEqUpDown, "Applies gentle pre-conditioning to imported SoundFont sample audio before PS2 encoding. Useful when an SF2 sounds harsh or metallic.");
         AddConfigRow(layout, 3, "sf2_pre_lowpass_hz", _sf2PreLowPassUpDown, "Manual low-pass cutoff for imported SoundFont sample audio before PS2 encoding. Use 0 to disable the manual override.");
         AddConfigRow(layout, 4, "sf2_auto_lowpass", _sf2AutoLowPassCheckBox, "Automatically low-passes explicitly resampled SoundFont samples near their original bandwidth so rebuilt banks keep less empty upscaled high-frequency noise.");
-        AddConfigRow(layout, 5, "midi_program_compaction", _midiProgramCompactionComboBox, "Controls whether sparse MIDI program numbers stay sparse in the authored WD or get renumbered densely. 'compact' removes empty WD table gaps.");
-        AddConfigRow(layout, 6, "adsr", _adsrModeComboBox, "Chooses how MIDI/SF2 ADSR is authored. 'authored' uses the VGMTrans-style fit, 'auto' keeps the hybrid logic, and 'template' forces template WD ADSR where a match exists.");
-        AddConfigRow(layout, 7, "midi_pitch_bend_workaround", _midiPitchWorkaroundCheckBox, "Enables the current pitch-bend approximation path for MIDI/SF2 rebuilds. Turn it off for clean A/B testing when bend behavior itself is under investigation.");
-        AddConfigRow(layout, 8, "midi_loop", _midiLoopCheckBox, "Makes the rebuilt PS2 BGM sequence loop. If the MIDI has explicit loop markers, those are preferred; otherwise it falls back to a start-to-end loop.");
+        AddConfigRow(layout, 5, "sf2_loop_policy", _sf2LoopPolicyComboBox, "Chooses how SoundFont loops are prepared for WD. 'safe' is default; 'advanced' uses decoded-ADPCM scoring; 'auto-loop' searches from the end; 'advanced-auto-loop' searches near the original SF2 loop window.");
+        AddConfigRow(layout, 6, "sf2_loop_micro_crossfade", _sf2LoopMicroCrossfadeCheckBox, "Optional auto-fallback for difficult loop transitions. When enabled, high-error auto-loop/advanced samples may get a tiny PCM crossfade before PS2 ADPCM encoding.");
+        AddConfigRow(layout, 7, "sf2_loop_tail_wrap_fill", _sf2LoopTailWrapFillCheckBox, "Fills the last partial PSX-ADPCM frame of looped SF2 samples with samples from the loop start instead of letting that partial frame encode as zero-padded tail material.");
+        AddConfigRow(layout, 8, "sf2_loop_start_content_align", _sf2LoopStartContentAlignCheckBox, "Safe-policy only. Moves the real SF2 loop-start content onto the WD 28-sample loop block so the loop restarts at the intended waveform instead of earlier pre-loop material.");
+        AddConfigRow(layout, 9, "sf2_loop_end_content_align", _sf2LoopEndContentAlignCheckBox, "Safe-policy test path. Prepends up to 27 silent samples so the original SF2 loop end lands on a 28-sample WD block; start-content alignment is skipped for affected samples.");
+        AddConfigRow(layout, 10, "midi_program_compaction", _midiProgramCompactionComboBox, "Controls whether sparse MIDI program numbers stay sparse in the authored WD or get renumbered densely. 'compact' removes empty WD table gaps.");
+        AddConfigRow(layout, 11, "adsr", _adsrModeComboBox, "Chooses how MIDI/SF2 ADSR is authored. 'authored' uses the VGMTrans-style fit, 'auto' keeps the hybrid logic, and 'template' forces template WD ADSR where a match exists.");
+        AddConfigRow(layout, 12, "midi_pitch_bend_workaround", _midiPitchWorkaroundCheckBox, "Enables the current pitch-bend approximation path for MIDI/SF2 rebuilds. Turn it off for clean A/B testing when bend behavior itself is under investigation.");
+        AddConfigRow(layout, 13, "midi_loop", _midiLoopCheckBox, "Makes the rebuilt PS2 BGM sequence loop. If the MIDI has explicit loop markers, those are preferred; otherwise it falls back to a start-to-end loop.");
         group.Controls.Add(layout);
         return group;
     }

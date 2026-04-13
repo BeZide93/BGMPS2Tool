@@ -556,11 +556,9 @@ public static class BgmWaveRebuilder
 
     private static void EncodeRootNote(double rootNote, out byte rawFineTune, out byte rawUnityKey)
     {
-        var unityKey = (int)Math.Round(rootNote, MidpointRounding.AwayFromZero);
-        var fineTune = (int)Math.Round((rootNote - unityKey) * 100.0, MidpointRounding.AwayFromZero);
-        fineTune = Math.Clamp(fineTune, -50, 50);
-        rawFineTune = WdSampleTool.EncodeWdFineTune(fineTune);
-        rawUnityKey = unchecked((byte)(0x3A - unityKey));
+        var encodedPitch = WdSampleTool.EncodeWdRootNote(rootNote);
+        rawFineTune = encodedPitch.RawFineTune;
+        rawUnityKey = encodedPitch.RawUnityKey;
     }
 
     private static List<TrackLayout> ReadTrackLayout(byte[] data, int trackCount)

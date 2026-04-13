@@ -91,6 +91,11 @@ internal sealed partial class MainForm : Form
         _sf2PreEqUpDown.Value = ToDecimal(config.Sf2PreEqStrength, _sf2PreEqUpDown);
         _sf2PreLowPassUpDown.Value = ToDecimal(config.Sf2PreLowPassHz, _sf2PreLowPassUpDown);
         _sf2AutoLowPassCheckBox.Checked = config.Sf2AutoLowPass;
+        _sf2LoopPolicyComboBox.SelectedItem = config.Sf2LoopPolicy;
+        _sf2LoopMicroCrossfadeCheckBox.Checked = config.Sf2LoopMicroCrossfade;
+        _sf2LoopTailWrapFillCheckBox.Checked = config.Sf2LoopTailWrapFill;
+        _sf2LoopStartContentAlignCheckBox.Checked = config.Sf2LoopStartContentAlign;
+        _sf2LoopEndContentAlignCheckBox.Checked = config.Sf2LoopEndContentAlign;
         _midiProgramCompactionComboBox.SelectedItem = config.MidiProgramCompaction;
         _adsrModeComboBox.SelectedItem = config.AdsrMode;
         _midiPitchWorkaroundCheckBox.Checked = config.MidiPitchBendWorkaround;
@@ -621,6 +626,11 @@ internal sealed partial class MainForm : Form
             Sf2PreEqStrength: (double)_sf2PreEqUpDown.Value,
             Sf2PreLowPassHz: (double)_sf2PreLowPassUpDown.Value,
             Sf2AutoLowPass: _sf2AutoLowPassCheckBox.Checked,
+            Sf2LoopPolicy: _sf2LoopPolicyComboBox.SelectedItem?.ToString() ?? "safe",
+            Sf2LoopMicroCrossfade: _sf2LoopMicroCrossfadeCheckBox.Checked,
+            Sf2LoopTailWrapFill: _sf2LoopTailWrapFillCheckBox.Checked,
+            Sf2LoopStartContentAlign: _sf2LoopStartContentAlignCheckBox.Checked,
+            Sf2LoopEndContentAlign: _sf2LoopEndContentAlignCheckBox.Checked,
             MidiProgramCompaction: _midiProgramCompactionComboBox.SelectedItem?.ToString() ?? "compact",
             AdsrMode: _adsrModeComboBox.SelectedItem?.ToString() ?? "authored",
             MidiPitchBendWorkaround: _midiPitchWorkaroundCheckBox.Checked,

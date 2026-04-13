@@ -10,6 +10,11 @@ public sealed record BgmToolConfig(
     double Sf2PreEqStrength,
     double Sf2PreLowPassHz,
     bool Sf2AutoLowPass,
+    string Sf2LoopPolicy,
+    bool Sf2LoopMicroCrossfade,
+    bool Sf2LoopTailWrapFill,
+    bool Sf2LoopStartContentAlign,
+    bool Sf2LoopEndContentAlign,
     string MidiProgramCompaction,
     string AdsrMode,
     bool MidiPitchBendWorkaround,
@@ -25,6 +30,11 @@ public sealed record BgmToolConfig(
         Sf2PreEqStrength: 0.0,
         Sf2PreLowPassHz: 0.0,
         Sf2AutoLowPass: false,
+        Sf2LoopPolicy: "safe",
+        Sf2LoopMicroCrossfade: false,
+        Sf2LoopTailWrapFill: false,
+        Sf2LoopStartContentAlign: true,
+        Sf2LoopEndContentAlign: false,
         MidiProgramCompaction: "compact",
         AdsrMode: "authored",
         MidiPitchBendWorkaround: true,
@@ -113,6 +123,21 @@ public static class BgmToolGuiBridge
                     break;
                 case "sf2_auto_lowpass" when TryParseBool(valueText, out var sf2AutoLowPass):
                     config = config with { Sf2AutoLowPass = sf2AutoLowPass };
+                    break;
+                case "sf2_loop_policy":
+                    config = config with { Sf2LoopPolicy = NormalizeLoopPolicy(valueText) };
+                    break;
+                case "sf2_loop_micro_crossfade" when TryParseBool(valueText, out var sf2LoopMicroCrossfade):
+                    config = config with { Sf2LoopMicroCrossfade = sf2LoopMicroCrossfade };
+                    break;
+                case "sf2_loop_tail_wrap_fill" when TryParseBool(valueText, out var sf2LoopTailWrapFill):
+                    config = config with { Sf2LoopTailWrapFill = sf2LoopTailWrapFill };
+                    break;
+                case "sf2_loop_start_content_align" when TryParseBool(valueText, out var sf2LoopStartContentAlign):
+                    config = config with { Sf2LoopStartContentAlign = sf2LoopStartContentAlign };
+                    break;
+                case "sf2_loop_end_content_align" when TryParseBool(valueText, out var sf2LoopEndContentAlign):
+                    config = config with { Sf2LoopEndContentAlign = sf2LoopEndContentAlign };
                     break;
                 case "midi_program_compaction":
                     config = config with { MidiProgramCompaction = NormalizeEnum(valueText, "compact") };
@@ -454,6 +479,18 @@ public static class BgmToolGuiBridge
         return value.Trim().ToLowerInvariant();
     }
 
+    private static string NormalizeLoopPolicy(string value)
+    {
+        var normalized = NormalizeEnum(value, "safe").Replace('_', '-').Replace(' ', '-');
+        return normalized switch
+        {
+            "advanced" or "scored" or "adpcm-scored" or "live" => "advanced",
+            "auto" or "auto-loop" or "autoloop" => "auto-loop",
+            "advanced-auto" or "advanced-auto-loop" or "advanced-autoloop" or "closest-auto-loop" or "original-auto-loop" => "advanced-auto-loop",
+            _ => "safe",
+        };
+    }
+
     private static string BuildConfigText(BgmToolConfig config)
     {
         var builder = new StringBuilder();
@@ -467,6 +504,15 @@ public static class BgmToolGuiBridge
         builder.AppendLine($"sf2_pre_eq={config.Sf2PreEqStrength.ToString("0.###", CultureInfo.InvariantCulture)}");
         builder.AppendLine($"sf2_pre_lowpass_hz={config.Sf2PreLowPassHz.ToString("0.###", CultureInfo.InvariantCulture)}");
         builder.AppendLine($"sf2_auto_lowpass={(config.Sf2AutoLowPass ? "1" : "0")}");
+        builder.AppendLine("; sf2_loop_policy: safe = patched v0.9.2 loop path (default, quietest), advanced = decoded-ADPCM loop scoring, auto-loop = ignore SF2 loop points and search new 28-sample-aligned loop points, advanced-auto-loop = search 28-sample loop points near the original SF2 loop window.");
+        builder.AppendLine($"sf2_loop_policy={NormalizeLoopPolicy(config.Sf2LoopPolicy)}");
+        builder.AppendLine($"sf2_loop_micro_crossfade={(config.Sf2LoopMicroCrossfade ? "1" : "0")}");
+        builder.AppendLine("; sf2_loop_tail_wrap_fill: fills the last partial PSX-ADPCM loop frame from the loop start instead of leaving the encoder to zero-pad that partial frame.");
+        builder.AppendLine($"sf2_loop_tail_wrap_fill={(config.Sf2LoopTailWrapFill ? "1" : "0")}");
+        builder.AppendLine("; sf2_loop_start_content_align: safe-policy only; moves the actual SF2 loop body onto the WD 28-sample loop-start block instead of looping earlier pre-loop material.");
+        builder.AppendLine($"sf2_loop_start_content_align={(config.Sf2LoopStartContentAlign ? "1" : "0")}");
+        builder.AppendLine("; sf2_loop_end_content_align: safe-policy test path; prepends up to 27 silent samples so the original SF2 loop end lands on a 28-sample WD block. If enabled, start-content alignment is skipped for that sample.");
+        builder.AppendLine($"sf2_loop_end_content_align={(config.Sf2LoopEndContentAlign ? "1" : "0")}");
         builder.AppendLine($"midi_program_compaction={NormalizeEnum(config.MidiProgramCompaction, "compact")}");
         builder.AppendLine($"adsr={NormalizeEnum(config.AdsrMode, "authored")}");
         builder.AppendLine($"midi_pitch_bend_workaround={(config.MidiPitchBendWorkaround ? "1" : "0")}");

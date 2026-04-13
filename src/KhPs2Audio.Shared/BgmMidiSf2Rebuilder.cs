@@ -11,6 +11,11 @@ public static class BgmMidiSf2Rebuilder
     private const string Sf2PreEqKey = "sf2_pre_eq";
     private const string Sf2PreLowPassHzKey = "sf2_pre_lowpass_hz";
     private const string Sf2AutoLowPassKey = "sf2_auto_lowpass";
+    private const string Sf2LoopPolicyKey = "sf2_loop_policy";
+    private const string Sf2LoopMicroCrossfadeKey = "sf2_loop_micro_crossfade";
+    private const string Sf2LoopTailWrapFillKey = "sf2_loop_tail_wrap_fill";
+    private const string Sf2LoopStartContentAlignKey = "sf2_loop_start_content_align";
+    private const string Sf2LoopEndContentAlignKey = "sf2_loop_end_content_align";
     private const string MidiPitchBendWorkaroundKey = "midi_pitch_bend_workaround";
     private const string MidiProgramCompactionKey = "midi_program_compaction";
     private const string AdsrModeKey = "adsr";
@@ -20,6 +25,11 @@ public static class BgmMidiSf2Rebuilder
     private const double DefaultSf2PreEqStrength = 0.0;
     private const double DefaultSf2PreLowPassHz = 0.0;
     private const bool DefaultSf2AutoLowPass = false;
+    private const MidiSf2LoopPolicy DefaultMidiSf2LoopPolicy = MidiSf2LoopPolicy.Safe;
+    private const bool DefaultSf2LoopMicroCrossfade = false;
+    private const bool DefaultSf2LoopTailWrapFill = false;
+    private const bool DefaultSf2LoopStartContentAlign = true;
+    private const bool DefaultSf2LoopEndContentAlign = false;
     private const bool DefaultMidiPitchBendWorkaround = true;
     private const MidiProgramCompactionMode DefaultMidiProgramCompaction = MidiProgramCompactionMode.Preserve;
     private const MidiSf2AdsrMode DefaultMidiSf2AdsrMode = MidiSf2AdsrMode.Authored;
@@ -39,16 +49,32 @@ public static class BgmMidiSf2Rebuilder
     private const int MaxEnvelopeSearchSamples = SpuSampleRate * 120;
     private const int GeneralMidiPercussionChannel = 9;
     private const int GeneralMidiPercussionBank = 128;
+    private const int PsxAdpcmFrameSamples = 28;
     private const int ShortLoopAlignmentThresholdSamples = 512;
+    private const int LoopContinuityWindowSamples = 16;
+    private const int LoopMicroCrossfadeMinSamples = 5;
+    private const int LoopMicroCrossfadeMaxSamples = 20;
+    private const double LoopMicroCrossfadeContinuityThreshold = 2048.0;
+    private const int LoopPitchSafeCandidateRadiusSamples = PsxAdpcmFrameSamples * 2;
+    private const int ShortLoopSmoothingMaxLoopLengthSamples = ShortLoopAlignmentThresholdSamples;
+    private const int AutoLoopMinLengthSamples = PsxAdpcmFrameSamples * 4;
+    private const int AutoLoopMaxSearchSamples = 32_768;
+    private const int AutoLoopEndCandidateCount = 8;
+    private const int AutoLoopPcmCandidateLimit = 32;
+    private const int AutoLoopCrossfadeMinSamples = 5;
+    private const int AutoLoopCrossfadeMaxSamples = 20;
     private const int PitchVariantStepCents = 25;
     private const int PitchVariantMaxResidualCents = 50;
     private const int PitchRetuneNoOpThresholdCents = 5;
     private const int SustainHoldShift = 31;
     private const int SustainHoldStep = 3;
+    private static readonly int[] PsxAdpcmCoefficients0 = [0, 60, 115, 98, 122];
+    private static readonly int[] PsxAdpcmCoefficients1 = [0, 0, -52, -55, -60];
     private static readonly uint[] PsxRateTable = BuildPsxRateTable();
     private static readonly IReadOnlyList<AttackAdsrProfile> AttackProfiles = BuildAttackProfiles();
     private static readonly IReadOnlyList<DecayAdsrProfile> DecayProfiles = BuildDecayProfiles();
     private static readonly IReadOnlyList<ReleaseAdsrProfile> ReleaseProfiles = BuildReleaseProfiles();
+    private static readonly double[] TonalLoopAdpcmErrorFeedbackCandidates = [0.75, 0.5, 0.25, 0.0];
 
     public static string ReplaceFromMidi(string midiPath, string? soundFontPath, TextWriter log)
     {
@@ -78,6 +104,11 @@ public static class BgmMidiSf2Rebuilder
         var midiPitchBendWorkaround = config.MidiPitchBendWorkaround;
         var midiProgramCompaction = config.MidiProgramCompaction;
         var adsrMode = config.AdsrMode;
+        var sf2LoopPolicy = config.Sf2LoopPolicy;
+        var sf2LoopMicroCrossfade = config.Sf2LoopMicroCrossfade;
+        var sf2LoopTailWrapFill = config.Sf2LoopTailWrapFill;
+        var sf2LoopStartContentAlign = config.Sf2LoopStartContentAlign;
+        var sf2LoopEndContentAlign = config.Sf2LoopEndContentAlign;
         var midi = MidiFileParser.Parse(inputMidiPath);
         var sf2Path = ResolveSoundFontPath(soundFontPath, assetDirectory, bgmInfo.BankId);
         var wdBank = WdBankFile.Load(wdPath);
@@ -92,7 +123,7 @@ public static class BgmMidiSf2Rebuilder
                 var soundFont = SoundFontParser.Parse(
                     sf2Path,
                     new SoundFontImportOptions(config.Sf2PreEqStrength, config.Sf2PreLowPassHz, config.Sf2AutoLowPass));
-                plan = BuildPlan(midi, soundFont, wdBank, volume, sf2BankMode, midiProgramCompaction, adsrMode, midiPitchBendWorkaround, log);
+                plan = BuildPlan(midi, soundFont, wdBank, volume, sf2BankMode, midiProgramCompaction, adsrMode, midiPitchBendWorkaround, sf2LoopPolicy, sf2LoopMicroCrossfade, sf2LoopTailWrapFill, sf2LoopStartContentAlign, sf2LoopEndContentAlign, log);
                 plan = ConstrainPlanToWdBudget(plan, MaxAuthoredWdBytes, log);
                 outputWd = BuildWd(wdPath, bgmInfo.BankId, plan, log);
                 programSourceLabel = Path.GetFileName(sf2Path);
@@ -220,8 +251,8 @@ public static class BgmMidiSf2Rebuilder
         if (!File.Exists(configPath))
         {
             log.WriteLine(
-                $"Config: {ConfigFileName} not found next to the tool. Using default {Sf2VolumeKey}={DefaultSf2Volume:0.###}, {MidiLoopKey}=0, {Sf2BankModeKey}={DefaultSf2BankMode.ToString().ToLowerInvariant()}, {Sf2PreEqKey}={DefaultSf2PreEqStrength:0.###}, {Sf2PreLowPassHzKey}={DefaultSf2PreLowPassHz:0.###}, {Sf2AutoLowPassKey}=0, {MidiProgramCompactionKey}={DefaultMidiProgramCompaction.ToString().ToLowerInvariant()}, {AdsrModeKey}={DefaultMidiSf2AdsrMode.ToString().ToLowerInvariant()}, and {MidiPitchBendWorkaroundKey}=1 for MIDI/SF2 conversion.");
-            return new MidiSf2Config(DefaultSf2Volume, DefaultMidiLoop, DefaultSf2BankMode, DefaultSf2PreEqStrength, DefaultSf2PreLowPassHz, DefaultSf2AutoLowPass, DefaultMidiPitchBendWorkaround, DefaultMidiProgramCompaction, DefaultMidiSf2AdsrMode);
+                $"Config: {ConfigFileName} not found next to the tool. Using default {Sf2VolumeKey}={DefaultSf2Volume:0.###}, {MidiLoopKey}=0, {Sf2BankModeKey}={DefaultSf2BankMode.ToString().ToLowerInvariant()}, {Sf2PreEqKey}={DefaultSf2PreEqStrength:0.###}, {Sf2PreLowPassHzKey}={DefaultSf2PreLowPassHz:0.###}, {Sf2AutoLowPassKey}=0, {Sf2LoopPolicyKey}={FormatMidiSf2LoopPolicy(DefaultMidiSf2LoopPolicy)}, {Sf2LoopMicroCrossfadeKey}=0, {Sf2LoopTailWrapFillKey}=0, {Sf2LoopStartContentAlignKey}=1, {Sf2LoopEndContentAlignKey}=0, {MidiProgramCompactionKey}={DefaultMidiProgramCompaction.ToString().ToLowerInvariant()}, {AdsrModeKey}={DefaultMidiSf2AdsrMode.ToString().ToLowerInvariant()}, and {MidiPitchBendWorkaroundKey}=1 for MIDI/SF2 conversion.");
+            return new MidiSf2Config(DefaultSf2Volume, DefaultMidiLoop, DefaultSf2BankMode, DefaultSf2PreEqStrength, DefaultSf2PreLowPassHz, DefaultSf2AutoLowPass, DefaultMidiSf2LoopPolicy, DefaultSf2LoopMicroCrossfade, DefaultSf2LoopTailWrapFill, DefaultSf2LoopStartContentAlign, DefaultSf2LoopEndContentAlign, DefaultMidiPitchBendWorkaround, DefaultMidiProgramCompaction, DefaultMidiSf2AdsrMode);
         }
 
         var volume = DefaultSf2Volume;
@@ -230,6 +261,11 @@ public static class BgmMidiSf2Rebuilder
         var sf2PreEqStrength = DefaultSf2PreEqStrength;
         var sf2PreLowPassHz = DefaultSf2PreLowPassHz;
         var sf2AutoLowPass = DefaultSf2AutoLowPass;
+        var sf2LoopPolicy = DefaultMidiSf2LoopPolicy;
+        var sf2LoopMicroCrossfade = DefaultSf2LoopMicroCrossfade;
+        var sf2LoopTailWrapFill = DefaultSf2LoopTailWrapFill;
+        var sf2LoopStartContentAlign = DefaultSf2LoopStartContentAlign;
+        var sf2LoopEndContentAlign = DefaultSf2LoopEndContentAlign;
         var midiPitchBendWorkaround = DefaultMidiPitchBendWorkaround;
         var midiProgramCompaction = DefaultMidiProgramCompaction;
         var adsrMode = DefaultMidiSf2AdsrMode;
@@ -239,6 +275,11 @@ public static class BgmMidiSf2Rebuilder
         var foundExplicitSf2PreEq = false;
         var foundExplicitSf2PreLowPass = false;
         var foundExplicitSf2AutoLowPass = false;
+        var foundExplicitSf2LoopPolicy = false;
+        var foundExplicitSf2LoopMicroCrossfade = false;
+        var foundExplicitSf2LoopTailWrapFill = false;
+        var foundExplicitSf2LoopStartContentAlign = false;
+        var foundExplicitSf2LoopEndContentAlign = false;
         var foundExplicitMidiPitchBendWorkaround = false;
         var foundExplicitMidiProgramCompaction = false;
         var foundExplicitAdsrMode = false;
@@ -331,6 +372,66 @@ public static class BgmMidiSf2Rebuilder
                 continue;
             }
 
+            if (key.Equals(Sf2LoopMicroCrossfadeKey, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryParseConfigBool(valueText, out sf2LoopMicroCrossfade))
+                {
+                    log.WriteLine($"Config warning: could not parse {Sf2LoopMicroCrossfadeKey}={valueText}. Use 0/1, true/false, yes/no, or on/off. Using the current value.");
+                    sf2LoopMicroCrossfade = DefaultSf2LoopMicroCrossfade;
+                }
+
+                foundExplicitSf2LoopMicroCrossfade = true;
+                continue;
+            }
+
+            if (key.Equals(Sf2LoopTailWrapFillKey, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryParseConfigBool(valueText, out sf2LoopTailWrapFill))
+                {
+                    log.WriteLine($"Config warning: could not parse {Sf2LoopTailWrapFillKey}={valueText}. Use 0/1, true/false, yes/no, or on/off. Using the current value.");
+                    sf2LoopTailWrapFill = DefaultSf2LoopTailWrapFill;
+                }
+
+                foundExplicitSf2LoopTailWrapFill = true;
+                continue;
+            }
+
+            if (key.Equals(Sf2LoopStartContentAlignKey, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryParseConfigBool(valueText, out sf2LoopStartContentAlign))
+                {
+                    log.WriteLine($"Config warning: could not parse {Sf2LoopStartContentAlignKey}={valueText}. Use 0/1, true/false, yes/no, or on/off. Using the current value.");
+                    sf2LoopStartContentAlign = DefaultSf2LoopStartContentAlign;
+                }
+
+                foundExplicitSf2LoopStartContentAlign = true;
+                continue;
+            }
+
+            if (key.Equals(Sf2LoopEndContentAlignKey, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryParseConfigBool(valueText, out sf2LoopEndContentAlign))
+                {
+                    log.WriteLine($"Config warning: could not parse {Sf2LoopEndContentAlignKey}={valueText}. Use 0/1, true/false, yes/no, or on/off. Using the current value.");
+                    sf2LoopEndContentAlign = DefaultSf2LoopEndContentAlign;
+                }
+
+                foundExplicitSf2LoopEndContentAlign = true;
+                continue;
+            }
+
+            if (key.Equals(Sf2LoopPolicyKey, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryParseMidiSf2LoopPolicy(valueText, out sf2LoopPolicy))
+                {
+                    log.WriteLine($"Config warning: could not parse {Sf2LoopPolicyKey}={valueText}. Use 'safe', 'advanced', 'auto-loop', or 'advanced-auto-loop'. Using the current value.");
+                    sf2LoopPolicy = DefaultMidiSf2LoopPolicy;
+                }
+
+                foundExplicitSf2LoopPolicy = true;
+                continue;
+            }
+
             if (key.Equals(MidiPitchBendWorkaroundKey, StringComparison.OrdinalIgnoreCase))
             {
                 if (!TryParseConfigBool(valueText, out midiPitchBendWorkaround))
@@ -408,6 +509,21 @@ public static class BgmMidiSf2Rebuilder
         var sf2AutoLowPassLabel = foundExplicitSf2AutoLowPass
             ? $"{Sf2AutoLowPassKey}={(sf2AutoLowPass ? 1 : 0)}"
             : $"{Sf2AutoLowPassKey} not set, using default {Sf2AutoLowPassKey}={(DefaultSf2AutoLowPass ? 1 : 0)}";
+        var sf2LoopPolicyLabel = foundExplicitSf2LoopPolicy
+            ? $"{Sf2LoopPolicyKey}={FormatMidiSf2LoopPolicy(sf2LoopPolicy)}"
+            : $"{Sf2LoopPolicyKey} not set, using default {Sf2LoopPolicyKey}={FormatMidiSf2LoopPolicy(DefaultMidiSf2LoopPolicy)}";
+        var sf2LoopMicroCrossfadeLabel = foundExplicitSf2LoopMicroCrossfade
+            ? $"{Sf2LoopMicroCrossfadeKey}={(sf2LoopMicroCrossfade ? 1 : 0)}"
+            : $"{Sf2LoopMicroCrossfadeKey} not set, using default {Sf2LoopMicroCrossfadeKey}={(DefaultSf2LoopMicroCrossfade ? 1 : 0)}";
+        var sf2LoopTailWrapFillLabel = foundExplicitSf2LoopTailWrapFill
+            ? $"{Sf2LoopTailWrapFillKey}={(sf2LoopTailWrapFill ? 1 : 0)}"
+            : $"{Sf2LoopTailWrapFillKey} not set, using default {Sf2LoopTailWrapFillKey}={(DefaultSf2LoopTailWrapFill ? 1 : 0)}";
+        var sf2LoopStartContentAlignLabel = foundExplicitSf2LoopStartContentAlign
+            ? $"{Sf2LoopStartContentAlignKey}={(sf2LoopStartContentAlign ? 1 : 0)}"
+            : $"{Sf2LoopStartContentAlignKey} not set, using default {Sf2LoopStartContentAlignKey}={(DefaultSf2LoopStartContentAlign ? 1 : 0)}";
+        var sf2LoopEndContentAlignLabel = foundExplicitSf2LoopEndContentAlign
+            ? $"{Sf2LoopEndContentAlignKey}={(sf2LoopEndContentAlign ? 1 : 0)}"
+            : $"{Sf2LoopEndContentAlignKey} not set, using default {Sf2LoopEndContentAlignKey}={(DefaultSf2LoopEndContentAlign ? 1 : 0)}";
         var programCompactionLabel = foundExplicitMidiProgramCompaction
             ? $"{MidiProgramCompactionKey}={midiProgramCompaction.ToString().ToLowerInvariant()}"
             : $"{MidiProgramCompactionKey} not set, using default {MidiProgramCompactionKey}={DefaultMidiProgramCompaction.ToString().ToLowerInvariant()}";
@@ -417,9 +533,9 @@ public static class BgmMidiSf2Rebuilder
         var pitchWorkaroundLabel = foundExplicitMidiPitchBendWorkaround
             ? $"{MidiPitchBendWorkaroundKey}={(midiPitchBendWorkaround ? 1 : 0)}"
             : $"{MidiPitchBendWorkaroundKey} not set, using default {MidiPitchBendWorkaroundKey}={(DefaultMidiPitchBendWorkaround ? 1 : 0)}";
-        log.WriteLine($"Config: loaded {configPath} -> {volumeLabel}; {loopLabel}; {bankModeLabel}; {sf2EqLabel}; {sf2LowPassLabel}; {sf2AutoLowPassLabel}; {programCompactionLabel}; {adsrModeLabel}; {pitchWorkaroundLabel}");
+        log.WriteLine($"Config: loaded {configPath} -> {volumeLabel}; {loopLabel}; {bankModeLabel}; {sf2EqLabel}; {sf2LowPassLabel}; {sf2AutoLowPassLabel}; {sf2LoopPolicyLabel}; {sf2LoopMicroCrossfadeLabel}; {sf2LoopTailWrapFillLabel}; {sf2LoopStartContentAlignLabel}; {sf2LoopEndContentAlignLabel}; {programCompactionLabel}; {adsrModeLabel}; {pitchWorkaroundLabel}");
 
-        return new MidiSf2Config(volume, midiLoop, sf2BankMode, sf2PreEqStrength, sf2PreLowPassHz, sf2AutoLowPass, midiPitchBendWorkaround, midiProgramCompaction, adsrMode);
+        return new MidiSf2Config(volume, midiLoop, sf2BankMode, sf2PreEqStrength, sf2PreLowPassHz, sf2AutoLowPass, sf2LoopPolicy, sf2LoopMicroCrossfade, sf2LoopTailWrapFill, sf2LoopStartContentAlign, sf2LoopEndContentAlign, midiPitchBendWorkaround, midiProgramCompaction, adsrMode);
     }
 
     private static bool TryParseConfigDouble(string valueText, out double value)
@@ -502,6 +618,49 @@ public static class BgmMidiSf2Rebuilder
         }
     }
 
+    private static bool TryParseMidiSf2LoopPolicy(string valueText, out MidiSf2LoopPolicy mode)
+    {
+        switch (valueText.Trim().ToLowerInvariant().Replace('_', '-').Replace(' ', '-'))
+        {
+            case "safe":
+            case "v0.9.2":
+            case "v092":
+            case "legacy":
+                mode = MidiSf2LoopPolicy.Safe;
+                return true;
+            case "advanced":
+            case "scored":
+            case "adpcm-scored":
+            case "live":
+                mode = MidiSf2LoopPolicy.Advanced;
+                return true;
+            case "auto":
+            case "auto-loop":
+            case "autoloop":
+                mode = MidiSf2LoopPolicy.AutoLoop;
+                return true;
+            case "advanced-auto":
+            case "advanced-auto-loop":
+            case "advanced-autoloop":
+            case "closest-auto-loop":
+            case "original-auto-loop":
+                mode = MidiSf2LoopPolicy.AdvancedAutoLoop;
+                return true;
+            default:
+                mode = DefaultMidiSf2LoopPolicy;
+                return false;
+        }
+    }
+
+    private static string FormatMidiSf2LoopPolicy(MidiSf2LoopPolicy mode)
+        => mode switch
+        {
+            MidiSf2LoopPolicy.Advanced => "advanced",
+            MidiSf2LoopPolicy.AutoLoop => "auto-loop",
+            MidiSf2LoopPolicy.AdvancedAutoLoop => "advanced-auto-loop",
+            _ => "safe",
+        };
+
     private static bool TryParseMidiSf2AdsrMode(string valueText, out MidiSf2AdsrMode mode)
     {
         switch (valueText.Trim().ToLowerInvariant())
@@ -527,7 +686,7 @@ public static class BgmMidiSf2Rebuilder
         }
     }
 
-    private static ConversionPlan BuildPlan(MidiFile midi, SoundFontFile soundFont, WdBankFile templateBank, double volume, Sf2BankMode sf2BankMode, MidiProgramCompactionMode midiProgramCompaction, MidiSf2AdsrMode adsrMode, bool enablePitchBendWorkaround, TextWriter log)
+    private static ConversionPlan BuildPlan(MidiFile midi, SoundFontFile soundFont, WdBankFile templateBank, double volume, Sf2BankMode sf2BankMode, MidiProgramCompactionMode midiProgramCompaction, MidiSf2AdsrMode adsrMode, bool enablePitchBendWorkaround, MidiSf2LoopPolicy loopPolicyMode, bool enableLoopMicroCrossfade, bool enableLoopTailWrapFill, bool enableLoopStartContentAlign, bool enableLoopEndContentAlign, TextWriter log)
     {
         var warnings = new HashSet<string>(soundFont.Warnings, StringComparer.Ordinal);
         var usedPresetRefs = GetUsedPresetRefs(midi);
@@ -536,7 +695,10 @@ public static class BgmMidiSf2Rebuilder
             warnings.Add("MIDI channel 10 percussion convention detected: channel 10 bank 0/program notes are resolved through SoundFont percussion bank 128 when available.");
         }
 
-        var pitchVariantPresetRefs = enablePitchBendWorkaround ? GetPitchBendPresetRefs(midi) : [];
+        var hasPitchBendEvents = ContainsPitchBendEvents(midi);
+        var effectivePitchBendWorkaround = enablePitchBendWorkaround && hasPitchBendEvents;
+
+        var pitchVariantPresetRefs = effectivePitchBendWorkaround ? GetPitchBendPresetRefs(midi) : [];
         var programMap = new Dictionary<PresetRef, ProgramMapping>();
         var authoredSamples = new Dictionary<string, AuthoredSample>(StringComparer.Ordinal);
         var instruments = new List<AuthoredInstrument>();
@@ -608,6 +770,14 @@ public static class BgmMidiSf2Rebuilder
             log.WriteLine("Program compaction: disabled because sf2_bank_mode=full should preserve original-style program indices wherever possible.");
         }
 
+        log.WriteLine(loopPolicyMode switch
+        {
+            MidiSf2LoopPolicy.Advanced => "SF2 loop policy: advanced; using the current decoded-ADPCM loop scoring path.",
+            MidiSf2LoopPolicy.AutoLoop => "SF2 loop policy: auto-loop; ignoring imported loop points for looped samples and searching new 28-sample-aligned loop points.",
+            MidiSf2LoopPolicy.AdvancedAutoLoop => "SF2 loop policy: advanced-auto-loop; searching WD-friendly loop points near the original SF2 loop window.",
+            _ => "SF2 loop policy: safe; using the patched v0.9.2 loop path with deterministic pitch compensation.",
+        });
+
         var presetsToAuthor = (sf2BankMode == Sf2BankMode.Full
                 ? availablePresets
                 : resolvedPresetMap.Values.ToList())
@@ -623,7 +793,7 @@ public static class BgmMidiSf2Rebuilder
         var enableShortLoopPitchCompensation = ShouldEnableShortLoopPitchCompensation(presetsToAuthor, warnings);
         if (enableShortLoopPitchCompensation)
         {
-            log.WriteLine("Short-loop pitch compensation: enabled for simple waveform-style SF2 content.");
+            log.WriteLine("Short-loop pitch-safe loop alignment: enabled for simple waveform-style SF2 content.");
         }
 
         var templateRegionsByInstrument = templateBank.Regions
@@ -707,7 +877,10 @@ public static class BgmMidiSf2Rebuilder
                     sourceOneShotRegionCount++;
                 }
 
-                var authoredIdentityKey = BuildLoopAwareIdentityKey(region.IdentityKey, loopPolicy.LoopDescriptor);
+                var useTonalLoopAdpcmEncoding = ShouldUseTonalLoopAdpcmEncoding(preset.Bank, loopPolicy.LoopDescriptor);
+                var authoredIdentityKey = BuildAdpcmEncodeAwareIdentityKey(
+                    BuildLoopAwareIdentityKey(region.IdentityKey, loopPolicy.LoopDescriptor),
+                    useTonalLoopAdpcmEncoding);
                 var authoredSample = GetOrAddAuthoredSample(
                     authoredSamples,
                     authoredIdentityKey,
@@ -716,7 +889,13 @@ public static class BgmMidiSf2Rebuilder
                     region.SamplePitch,
                     loopPolicy.LoopDescriptor,
                     volume,
-                    enableShortLoopPitchCompensation);
+                    enableShortLoopPitchCompensation,
+                    loopPolicyMode,
+                    enableLoopMicroCrossfade,
+                    enableLoopTailWrapFill,
+                    enableLoopStartContentAlign,
+                    enableLoopEndContentAlign,
+                    useTonalLoopAdpcmEncoding);
                 var envelope = EncodeAdsr(region);
                 var sourceInfo = new AuthoredRegionSourceInfo(
                     region.SourceSampleName,
@@ -805,15 +984,22 @@ public static class BgmMidiSf2Rebuilder
                 if (isStereo)
                 {
                     var stereoIdentityKey = BuildLoopAwareIdentityKey(region.StereoIdentityKey!, loopPolicy.LoopDescriptor);
+                    stereoIdentityKey = BuildAdpcmEncodeAwareIdentityKey(stereoIdentityKey, useTonalLoopAdpcmEncoding);
                     var stereoSample = GetOrAddAuthoredSample(
-                    authoredSamples,
-                    stereoIdentityKey,
-                    region.StereoSourceSampleName ?? $"{region.SourceSampleName}-R",
-                    region.StereoPcm!,
-                    region.SamplePitch,
-                    loopPolicy.LoopDescriptor,
-                    volume,
-                    enableShortLoopPitchCompensation);
+                        authoredSamples,
+                        stereoIdentityKey,
+                        region.StereoSourceSampleName ?? $"{region.SourceSampleName}-R",
+                        region.StereoPcm!,
+                        region.SamplePitch,
+                        loopPolicy.LoopDescriptor,
+                        volume,
+                        enableShortLoopPitchCompensation,
+                        loopPolicyMode,
+                        enableLoopMicroCrossfade,
+                        enableLoopTailWrapFill,
+                        enableLoopStartContentAlign,
+                        enableLoopEndContentAlign,
+                        useTonalLoopAdpcmEncoding);
 
                     authoredRegions.Add(new AuthoredRegion(
                         stereoSample,
@@ -882,11 +1068,11 @@ public static class BgmMidiSf2Rebuilder
             AddPitchVariantInstruments(instruments, usedInstrumentIndices, programMap, effectivePitchVariantPresetRefs, log);
         }
 
-        var channelPlans = BuildTrackPlans(midi, programMap, warnings, enablePitchBendWorkaround);
+        var channelPlans = BuildTrackPlans(midi, programMap, warnings, effectivePitchBendWorkaround);
 
-        if (midi.Tracks.SelectMany(static track => track.Events).OfType<MidiPitchBendEvent>().Any())
+        if (hasPitchBendEvents)
         {
-            warnings.Add(enablePitchBendWorkaround
+            warnings.Add(effectivePitchBendWorkaround
                 ? "Pitch-bend events are approximated by bend-aware note retargeting plus fine-tuned instrument variants. Continuous bends are not yet emitted as native KH2 pitch opcodes."
                 : "Pitch-bend events are ignored because midi_pitch_bend_workaround=0.");
         }
@@ -956,6 +1142,8 @@ public static class BgmMidiSf2Rebuilder
     {
         var warnings = new HashSet<string>(StringComparer.Ordinal);
         var usedPresetRefs = GetUsedPresetRefs(midi);
+        var hasPitchBendEvents = ContainsPitchBendEvents(midi);
+        var effectivePitchBendWorkaround = enablePitchBendWorkaround && hasPitchBendEvents;
         var availableInstrumentIndices = bank.Regions
             .Select(static region => region.InstrumentIndex)
             .Distinct()
@@ -984,7 +1172,14 @@ public static class BgmMidiSf2Rebuilder
                 $"The MIDI references program(s) that do not exist as instrument indices in the original WD. Missing: {missingList}. Available WD instruments: {availableList}.");
         }
 
-        var trackPlans = BuildTrackPlans(midi, programMap, warnings, enablePitchBendWorkaround);
+        var trackPlans = BuildTrackPlans(midi, programMap, warnings, effectivePitchBendWorkaround);
+        if (hasPitchBendEvents)
+        {
+            warnings.Add(effectivePitchBendWorkaround
+                ? "Pitch-bend events are approximated by bend-aware note retargeting plus fine-tuned instrument variants. Continuous bends are not yet emitted as native KH2 pitch opcodes."
+                : "Pitch-bend events are ignored because midi_pitch_bend_workaround=0.");
+        }
+
         log.WriteLine($"WD fallback analysis: {availableInstrumentIndices.Count} original instrument(s) available, {programMap.Count} MIDI program mapping(s) resolved directly against the original WD.");
 
         return new ConversionPlan(
@@ -1114,6 +1309,14 @@ public static class BgmMidiSf2Rebuilder
         }
 
         return used;
+    }
+
+    private static bool ContainsPitchBendEvents(MidiFile midi)
+    {
+        return midi.Tracks
+            .SelectMany(static track => track.Events)
+            .OfType<MidiPitchBendEvent>()
+            .Any();
     }
 
     private static bool UsesImplicitGeneralMidiPercussionBank(MidiFile midi)
@@ -1661,7 +1864,11 @@ public static class BgmMidiSf2Rebuilder
 
                         if (TryResolveProgramMapping(programMap, channel, bankMsb, bankLsb, currentProgram, out var noteProgram))
                         {
-                            var pitchTarget = ResolvePitchTarget(noteOn.Key, enablePitchBendWorkaround ? currentPitchBend : 0, bendRangeSemitones, noteProgram);
+                            var percussionPath = IsPercussionBank(GetEffectivePresetRef(channel, bankMsb, bankLsb, currentProgram).Bank);
+                            var effectivePitchBend = enablePitchBendWorkaround && !percussionPath
+                                ? currentPitchBend
+                                : 0;
+                            var pitchTarget = ResolvePitchTarget(noteOn.Key, effectivePitchBend, bendRangeSemitones, noteProgram);
                             if (emittedProgram != pitchTarget.Program)
                             {
                                 authoredEvents.Add(new AuthoredProgramEvent(noteOn.Tick, pitchTarget.Program));
@@ -1680,6 +1887,13 @@ public static class BgmMidiSf2Rebuilder
                         }
 
                         currentPitchBend = pitchBend.Value;
+                        if (IsPercussionBank(GetEffectivePresetRef(channel, bankMsb, bankLsb, currentProgram).Bank))
+                        {
+                            // Drum channels/banks use key numbers as instrument selectors.
+                            // Retargeting keys on bend would switch drum sounds instead of pitching.
+                            break;
+                        }
+
                         if (!emittedProgram.HasValue || activeNotes.Count == 0)
                         {
                             break;
@@ -2016,8 +2230,22 @@ public static class BgmMidiSf2Rebuilder
             .Where(sample => !ResolveAuthoredSampleLoopInfo(sample).Looping)
             .Count(sample => AnalyzeAdpcmFlags(sample.EncodedBytes).LoopFlagBlockCount > 0);
         var loopingRegionCount = plan.Instruments.Sum(static instrument => instrument.Regions.Count(region => ResolveAuthoredSampleLoopInfo(region.Sample).Looping));
+        var loopDiagnostics = plan.Samples
+            .Select(static sample => sample.LoopDiagnostics)
+            .Where(static diagnostics => diagnostics.Looping)
+            .ToList();
+        var shiftedLoopStartCount = loopDiagnostics.Count(static diagnostics => diagnostics.StartShiftSamples != 0);
+        var shiftedLoopEndCount = loopDiagnostics.Count(static diagnostics => diagnostics.EndShiftSamples != 0);
+        var crossfadedLoopCount = loopDiagnostics.Count(static diagnostics => diagnostics.CrossfadeApplied);
+        var autoCrossfadedLoopCount = loopDiagnostics.Count(static diagnostics => diagnostics.CrossfadeApplied && diagnostics.CrossfadeAutoFallback);
+        var tailPaddedLoopCount = loopDiagnostics.Count(static diagnostics => diagnostics.TailPaddingSamples != 0);
+        var maxContinuityBefore = loopDiagnostics.Count == 0 ? 0.0 : loopDiagnostics.Max(static diagnostics => diagnostics.ContinuityErrorBefore);
+        var maxContinuityAfter = loopDiagnostics.Count == 0 ? 0.0 : loopDiagnostics.Max(static diagnostics => diagnostics.ContinuityErrorAfter);
+        var maxDecodedAdpcmContinuityAfter = loopDiagnostics.Count == 0 ? 0.0 : loopDiagnostics.Max(static diagnostics => diagnostics.DecodedAdpcmContinuityErrorAfter);
+        var maxDecodedAdpcmStateMismatchAfter = loopDiagnostics.Count == 0 ? 0.0 : loopDiagnostics.Max(static diagnostics => diagnostics.DecodedAdpcmStateMismatchErrorAfter);
         log.WriteLine($"Authored WD from MIDI+SF2: {instrumentCount} instrument(s), {totalRegions} region(s), {sampleBytes.Count} bytes of PSX-ADPCM sample data using KH2-style 16-byte zero lead-ins for each sample chunk.");
         log.WriteLine($"Loop diagnostics: {loopingRegionCount} looping region(s), {totalRegions - loopingRegionCount} one-shot region(s), {nonLoopSamplesWithLoopFlags} non-loop sample(s) still carry ADPCM loop flags.");
+        log.WriteLine($"Loop alignment: {loopDiagnostics.Count} looping sample(s), shifted starts {shiftedLoopStartCount}, shifted ends {shiftedLoopEndCount}, ADPCM-tail padded {tailPaddedLoopCount}, micro-crossfaded {crossfadedLoopCount} (auto fallback {autoCrossfadedLoopCount}), max PCM continuity RMS {maxContinuityBefore:0.##} -> {maxContinuityAfter:0.##}, max decoded ADPCM stateful-wrap RMS {maxDecodedAdpcmContinuityAfter:0.##}, max decoded state-mismatch RMS {maxDecodedAdpcmStateMismatchAfter:0.##}.");
         log.WriteLine($"ADSR policy: reused template envelopes for {templateEnvelopeReuseCount} region(s), kept authored envelopes for {authoredEnvelopeCount} region(s), template exact-match misses {templateEnvelopeMissCount}.");
         return output;
     }
@@ -2064,19 +2292,29 @@ public static class BgmMidiSf2Rebuilder
             var resampledRequestedLoop = sample.RequestedLooping
                 ? sample.RequestedLoopDescriptor.ScaleSamples(loopScale, resampledPcm.Length)
                 : LoopDescriptor.None;
-            var prepared = PrepareLoopAlignedSample(resampledPcm, resampledRequestedLoop, false);
+            var prepared = PrepareLoopAlignedSample(resampledPcm, resampledRequestedLoop, false, false, MidiSf2LoopPolicy.Safe);
             var encoded = PsxAdpcmEncoder.Encode(prepared.Pcm, prepared.LoopDescriptor);
+            var normalizedRequestedLoop = prepared.LoopDescriptor.NormalizeToSamples(prepared.Pcm.Length);
+            var encodedLoopAdjustment = ResolveEncodedLoopPitchAdjustment(
+                encoded,
+                normalizedRequestedLoop,
+                prepared.Pcm.Length);
+            var loopDiagnostics = AddDecodedAdpcmLoopDiagnostics(
+                prepared.LoopDiagnostics,
+                encoded,
+                encodedLoopAdjustment.EffectiveLoopDescriptor);
             sampleMap[sample.IdentityKey] = sample with
             {
                 Pcm = prepared.Pcm,
                 EncodedBytes = encoded,
-                RequestedLoopDescriptor = resampledRequestedLoop.NormalizeToSamples(prepared.Pcm.Length),
-                EffectiveLoopDescriptor = prepared.LoopDescriptor.NormalizeToSamples(prepared.Pcm.Length),
+                RequestedLoopDescriptor = normalizedRequestedLoop,
+                EffectiveLoopDescriptor = encodedLoopAdjustment.EffectiveLoopDescriptor,
+                LoopDiagnostics = loopDiagnostics,
                 PitchComponents = sample.PitchComponents with
                 {
                     StoredSampleRate = targetSampleRate,
                     SampleRatePitchOffsetSemitones = sample.PitchComponents.SampleRatePitchOffsetSemitones + pitchSemitones,
-                    LoopAlignmentPitchOffsetSemitones = prepared.PitchOffsetSemitones,
+                    LoopAlignmentPitchOffsetSemitones = prepared.PitchOffsetSemitones + encodedLoopAdjustment.PitchOffsetSemitones,
                 },
             };
         }
@@ -2247,6 +2485,12 @@ public static class BgmMidiSf2Rebuilder
     private static string BuildLoopAwareIdentityKey(string baseIdentityKey, LoopDescriptor loopDescriptor)
         => $"{baseIdentityKey}|loop={(loopDescriptor.Looping ? 1 : 0)}|ls={(loopDescriptor.Looping ? Math.Max(0, loopDescriptor.ResolveStartSamples(int.MaxValue)) : 0)}|ll={(loopDescriptor.Looping ? Math.Max(0, loopDescriptor.ResolveLengthSamples(int.MaxValue)) : 0)}|lm={loopDescriptor.StartMeasure}/{loopDescriptor.LengthMeasure}";
 
+    private static string BuildAdpcmEncodeAwareIdentityKey(string baseIdentityKey, bool useTonalLoopAdpcmEncoding)
+        => useTonalLoopAdpcmEncoding ? $"{baseIdentityKey}|adpcm_tonal_loop=1" : baseIdentityKey;
+
+    private static bool ShouldUseTonalLoopAdpcmEncoding(int presetBank, LoopDescriptor loopDescriptor)
+        => loopDescriptor.Looping && !IsPercussionBank(presetBank);
+
     private static int ScoreTemplateRegion(WdRegionEntry template, AuthoredRegion region, int regionIndex)
     {
         var score = 0;
@@ -2389,6 +2633,7 @@ public static class BgmMidiSf2Rebuilder
                             loopInfo.Looping,
                             loopInfo.LoopStartBytes,
                             CreateLoopManifest(region.Sample.EffectiveLoopDescriptor),
+                            region.Sample.LoopDiagnostics,
                             region.LoopPolicyReason,
                             region.UsedTemplateLoopPolicy,
                             region.LoopTemplateMatchKind,
@@ -2463,6 +2708,8 @@ public static class BgmMidiSf2Rebuilder
             region.Sample.PitchComponents.SampleRatePitchOffsetSemitones,
             region.Sample.PitchComponents.LoopAlignmentPitchOffsetSemitones,
             region.Sample.PitchOffsetSemitones,
+            rawUnityKey,
+            rawFineTune,
             encodedUnityKey,
             encodedFineTuneCents,
             encodedRootNote,
@@ -3267,7 +3514,13 @@ public static class BgmMidiSf2Rebuilder
         SamplePitchComponents samplePitch,
         LoopDescriptor requestedLoopDescriptor,
         double volume,
-        bool enableShortLoopPitchCompensation)
+        bool enableShortLoopPitchCompensation,
+        MidiSf2LoopPolicy loopPolicyMode,
+        bool enableLoopMicroCrossfade,
+        bool enableLoopTailWrapFill,
+        bool enableLoopStartContentAlign,
+        bool enableLoopEndContentAlign,
+        bool useTonalLoopAdpcmEncoding)
     {
         if (authoredSamples.TryGetValue(identityKey, out var authoredSample))
         {
@@ -3275,31 +3528,345 @@ public static class BgmMidiSf2Rebuilder
         }
 
         var adjustedPcm = ApplyVolume(pcm, volume);
-        var prepared = PrepareLoopAlignedSample(adjustedPcm, requestedLoopDescriptor, enableShortLoopPitchCompensation);
-        var encoded = PsxAdpcmEncoder.Encode(prepared.Pcm, prepared.LoopDescriptor);
+        var endAlignedInput = ApplyLoopEndContentAlignment(
+            adjustedPcm,
+            requestedLoopDescriptor,
+            enableLoopEndContentAlign && loopPolicyMode == MidiSf2LoopPolicy.Safe);
+        var prepared = PrepareLoopAlignedSample(endAlignedInput.Pcm, endAlignedInput.LoopDescriptor, enableShortLoopPitchCompensation, enableLoopMicroCrossfade, loopPolicyMode);
+        if (endAlignedInput.PrefixSamples > 0)
+        {
+            prepared = AddLoopEndContentAlignmentDiagnostics(prepared, endAlignedInput.PrefixSamples);
+        }
+
+        prepared = ApplyLoopStartContentAlignment(
+            prepared,
+            enableLoopStartContentAlign &&
+            endAlignedInput.PrefixSamples == 0 &&
+            loopPolicyMode == MidiSf2LoopPolicy.Safe);
+        var useAdaptiveTonalLoopEncoding = loopPolicyMode != MidiSf2LoopPolicy.Safe && useTonalLoopAdpcmEncoding;
+        var preparedEncode = EncodePreparedAdpcmWithTailWrapFill(prepared, enableLoopTailWrapFill, useAdaptiveTonalLoopEncoding);
+        prepared = preparedEncode.PreparedSample;
+        var adpcmEncode = preparedEncode.EncodeSelection;
+        var encoded = adpcmEncode.EncodedBytes;
+        var adpcmErrorFeedbackScale = adpcmEncode.ErrorFeedbackScale;
+        var normalizedRequestedLoop = prepared.LoopDescriptor.NormalizeToSamples(prepared.Pcm.Length);
+        var encodedLoopAdjustment = loopPolicyMode == MidiSf2LoopPolicy.Safe
+            ? (EffectiveLoopDescriptor: normalizedRequestedLoop, PitchOffsetSemitones: 0.0)
+            : ResolveEncodedLoopPitchAdjustment(
+                encoded,
+                normalizedRequestedLoop,
+                prepared.Pcm.Length);
+        var loopDiagnostics = AddDecodedAdpcmLoopDiagnostics(
+            prepared.LoopDiagnostics,
+            encoded,
+            encodedLoopAdjustment.EffectiveLoopDescriptor) with
+        {
+            AdpcmErrorFeedbackScale = adpcmErrorFeedbackScale,
+        };
         var effectiveSampleRate = ResolveStoredSampleRate(samplePitch.StoredSampleRate, SpuSampleRate);
         authoredSample = new AuthoredSample(
             identityKey,
             sourceSampleName,
             prepared.Pcm,
             encoded,
-            requestedLoopDescriptor.NormalizeToSamples(prepared.Pcm.Length),
-            prepared.LoopDescriptor.NormalizeToSamples(prepared.Pcm.Length),
+            normalizedRequestedLoop,
+            encodedLoopAdjustment.EffectiveLoopDescriptor,
+            loopDiagnostics,
             samplePitch with
             {
                 StoredSampleRate = effectiveSampleRate,
                 SampleRatePitchOffsetSemitones = GetSampleRatePitchOffsetSemitones(effectiveSampleRate),
-                LoopAlignmentPitchOffsetSemitones = prepared.PitchOffsetSemitones,
+                LoopAlignmentPitchOffsetSemitones = prepared.PitchOffsetSemitones + encodedLoopAdjustment.PitchOffsetSemitones,
             });
         authoredSamples.Add(identityKey, authoredSample);
         return authoredSample;
     }
 
-    private static PreparedLoopSample PrepareLoopAlignedSample(short[] pcm, LoopDescriptor loopDescriptor, bool enableShortLoopPitchCompensation)
+    private static AdpcmEncodeSelection EncodePreparedAdpcm(
+        short[] pcm,
+        LoopDescriptor loopDescriptor,
+        bool useTonalLoopAdpcmEncoding)
+    {
+        var defaultEncoded = PsxAdpcmEncoder.Encode(
+            pcm,
+            loopDescriptor,
+            errorFeedbackScale: PsxAdpcmEncoder.DefaultErrorFeedbackScale);
+        if (!useTonalLoopAdpcmEncoding || !loopDescriptor.Looping)
+        {
+            return new AdpcmEncodeSelection(defaultEncoded, PsxAdpcmEncoder.DefaultErrorFeedbackScale);
+        }
+
+        var bestEncoded = defaultEncoded;
+        var bestFeedbackScale = PsxAdpcmEncoder.DefaultErrorFeedbackScale;
+        var bestScore = ScoreDecodedAdpcmLoopEncode(defaultEncoded, loopDescriptor);
+        foreach (var feedbackScale in TonalLoopAdpcmErrorFeedbackCandidates)
+        {
+            if (Math.Abs(feedbackScale - PsxAdpcmEncoder.DefaultErrorFeedbackScale) < 0.000001)
+            {
+                continue;
+            }
+
+            var candidateEncoded = PsxAdpcmEncoder.Encode(pcm, loopDescriptor, errorFeedbackScale: feedbackScale);
+            var candidateScore = ScoreDecodedAdpcmLoopEncode(candidateEncoded, loopDescriptor);
+            if (candidateScore < bestScore)
+            {
+                bestEncoded = candidateEncoded;
+                bestFeedbackScale = feedbackScale;
+                bestScore = candidateScore;
+            }
+        }
+
+        return new AdpcmEncodeSelection(bestEncoded, bestFeedbackScale);
+    }
+
+    private static PreparedAdpcmSelection EncodePreparedAdpcmWithTailWrapFill(
+        PreparedLoopSample prepared,
+        bool enableLoopTailWrapFill,
+        bool useTonalLoopAdpcmEncoding)
+    {
+        if (!enableLoopTailWrapFill ||
+            !TryCreateLoopTailWrapFilledPreparedSample(prepared, out var candidatePrepared))
+        {
+            var baselineEncode = EncodePreparedAdpcm(prepared.Pcm, prepared.LoopDescriptor, useTonalLoopAdpcmEncoding);
+            return new PreparedAdpcmSelection(prepared, baselineEncode);
+        }
+
+        var candidateEncode = EncodePreparedAdpcm(candidatePrepared.Pcm, candidatePrepared.LoopDescriptor, useTonalLoopAdpcmEncoding);
+        return new PreparedAdpcmSelection(candidatePrepared, candidateEncode);
+    }
+
+    private static LoopEndContentAlignedInput ApplyLoopEndContentAlignment(
+        short[] pcm,
+        LoopDescriptor loopDescriptor,
+        bool enabled)
+    {
+        if (!enabled || !loopDescriptor.Looping || pcm.Length == 0)
+        {
+            return new LoopEndContentAlignedInput(pcm, loopDescriptor, 0);
+        }
+
+        var loopStart = loopDescriptor.ResolveStartSamples(pcm.Length);
+        var loopLength = loopDescriptor.ResolveLengthSamples(pcm.Length);
+        var loopEnd = loopLength > 0
+            ? Math.Clamp(loopStart + loopLength, loopStart + 1, pcm.Length)
+            : pcm.Length;
+        var prefixSamples = (PsxAdpcmFrameSamples - (loopEnd % PsxAdpcmFrameSamples)) % PsxAdpcmFrameSamples;
+        if (prefixSamples == 0)
+        {
+            return new LoopEndContentAlignedInput(pcm, loopDescriptor, 0);
+        }
+
+        var output = new short[pcm.Length + prefixSamples];
+        Buffer.BlockCopy(pcm, 0, output, prefixSamples * sizeof(short), pcm.Length * sizeof(short));
+        var shiftedLoop = LoopDescriptor.FromSamples(
+            true,
+            loopStart + prefixSamples,
+            output.Length,
+            loopDescriptor.Type);
+        return new LoopEndContentAlignedInput(output, shiftedLoop, prefixSamples);
+    }
+
+    private static PreparedLoopSample AddLoopEndContentAlignmentDiagnostics(
+        PreparedLoopSample prepared,
+        int prefixSamples)
+    {
+        if (prefixSamples <= 0 || !prepared.LoopDiagnostics.Looping)
+        {
+            return prepared;
+        }
+
+        return prepared with
+        {
+            LoopDiagnostics = prepared.LoopDiagnostics with
+            {
+                LoopEndContentPrefixSamples = prefixSamples,
+            },
+        };
+    }
+
+    private static PreparedLoopSample ApplyLoopStartContentAlignment(
+        PreparedLoopSample prepared,
+        bool enabled)
+    {
+        if (!enabled || !prepared.LoopDescriptor.Looping || prepared.Pcm.Length == 0)
+        {
+            return prepared;
+        }
+
+        var diagnostics = prepared.LoopDiagnostics;
+        if (!diagnostics.Looping ||
+            diagnostics.StartShiftSamples >= 0 ||
+            diagnostics.EndShiftSamples != 0 ||
+            diagnostics.TailPaddingSamples != 0)
+        {
+            return prepared;
+        }
+
+        var originalStart = diagnostics.OriginalStartSample;
+        var alignedStart = diagnostics.AlignedStartSample;
+        if (originalStart <= alignedStart ||
+            originalStart >= prepared.Pcm.Length ||
+            alignedStart < 0 ||
+            alignedStart >= prepared.Pcm.Length ||
+            alignedStart % PsxAdpcmFrameSamples != 0)
+        {
+            return prepared;
+        }
+
+        var shiftSamples = originalStart - alignedStart;
+        if (shiftSamples <= 0 || shiftSamples >= PsxAdpcmFrameSamples)
+        {
+            return prepared;
+        }
+
+        var bodyEnd = prepared.Pcm.Length;
+        if (bodyEnd <= originalStart)
+        {
+            return prepared;
+        }
+
+        var outputLength = alignedStart + (bodyEnd - originalStart);
+        if (outputLength <= alignedStart)
+        {
+            return prepared;
+        }
+
+        var output = new short[outputLength];
+        if (alignedStart > 0)
+        {
+            Buffer.BlockCopy(prepared.Pcm, 0, output, 0, alignedStart * sizeof(short));
+        }
+
+        Buffer.BlockCopy(
+            prepared.Pcm,
+            originalStart * sizeof(short),
+            output,
+            alignedStart * sizeof(short),
+            (bodyEnd - originalStart) * sizeof(short));
+
+        var previousLoopLength = Math.Max(1, prepared.Pcm.Length - alignedStart);
+        var alignedLoopLength = Math.Max(1, output.Length - alignedStart);
+        var alignedLoop = LoopDescriptor.FromSamples(true, alignedStart, output.Length, prepared.LoopDescriptor.Type);
+        var pitchOffset = prepared.PitchOffsetSemitones + CalculateLoopLengthPitchOffset(previousLoopLength, alignedLoopLength);
+        var updatedDiagnostics = diagnostics with
+        {
+            AlignedEndSample = output.Length,
+            AlignedLengthSamples = Math.Max(0, output.Length - alignedStart),
+            LoopStartContentShiftSamples = -shiftSamples,
+            EndShiftSamples = output.Length - diagnostics.OriginalEndSample,
+            ContinuityErrorAfter = MeasureLoopContinuityError(output, alignedStart, output.Length),
+        };
+
+        return prepared with
+        {
+            Pcm = output,
+            LoopDescriptor = alignedLoop,
+            PitchOffsetSemitones = pitchOffset,
+            LoopDiagnostics = updatedDiagnostics,
+        };
+    }
+
+    private static bool TryCreateLoopTailWrapFilledPreparedSample(
+        PreparedLoopSample prepared,
+        out PreparedLoopSample candidate)
+    {
+        candidate = prepared;
+        if (!prepared.LoopDescriptor.Looping || prepared.Pcm.Length == 0)
+        {
+            return false;
+        }
+
+        var remainder = prepared.Pcm.Length % PsxAdpcmFrameSamples;
+        if (remainder == 0)
+        {
+            return false;
+        }
+
+        var loopStart = prepared.LoopDescriptor.ResolveStartSamples(prepared.Pcm.Length);
+        if (loopStart < 0 || loopStart >= prepared.Pcm.Length)
+        {
+            return false;
+        }
+
+        var loopLength = prepared.Pcm.Length - loopStart;
+        if (loopLength <= 0)
+        {
+            return false;
+        }
+
+        var fillSamples = PsxAdpcmFrameSamples - remainder;
+        var output = new short[prepared.Pcm.Length + fillSamples];
+        Buffer.BlockCopy(prepared.Pcm, 0, output, 0, prepared.Pcm.Length * sizeof(short));
+        for (var index = 0; index < fillSamples; index++)
+        {
+            output[prepared.Pcm.Length + index] = output[loopStart + (index % loopLength)];
+        }
+
+        var filledLoopLength = output.Length - loopStart;
+        var filledLoop = LoopDescriptor.FromSamples(true, loopStart, output.Length, prepared.LoopDescriptor.Type);
+        var pitchOffset = prepared.PitchOffsetSemitones + CalculateLoopLengthPitchOffset(loopLength, filledLoopLength);
+        var diagnostics = prepared.LoopDiagnostics with
+        {
+            AlignedEndSample = output.Length,
+            AlignedLengthSamples = Math.Max(0, filledLoopLength),
+            EndShiftSamples = prepared.LoopDiagnostics.EndShiftSamples + fillSamples,
+            TailPaddingSamples = prepared.LoopDiagnostics.TailPaddingSamples + fillSamples,
+            ContinuityErrorAfter = MeasureLoopContinuityError(output, loopStart, output.Length),
+        };
+
+        candidate = prepared with
+        {
+            Pcm = output,
+            LoopDescriptor = filledLoop,
+            PitchOffsetSemitones = pitchOffset,
+            LoopDiagnostics = diagnostics,
+        };
+        return true;
+    }
+
+    private static double ScoreDecodedAdpcmLoopEncode(byte[] encodedBytes, LoopDescriptor loopDescriptor)
+    {
+        var decodedScore = MeasureDecodedAdpcmLoopTransition(encodedBytes, loopDescriptor);
+        if (!decodedScore.Valid)
+        {
+            return double.MaxValue;
+        }
+
+        return decodedScore.ContinuityError +
+            (decodedScore.StateMismatchError * 0.75) +
+            (decodedScore.SlopeError * 0.25);
+    }
+
+    private static PreparedLoopSample PrepareLoopAlignedSample(
+        short[] pcm,
+        LoopDescriptor loopDescriptor,
+        bool enableShortLoopPitchCompensation,
+        bool enableLoopMicroCrossfade,
+        MidiSf2LoopPolicy loopPolicyMode)
     {
         if (!loopDescriptor.Looping || pcm.Length == 0)
         {
-            return new PreparedLoopSample(pcm, LoopDescriptor.None, 0.0);
+            return new PreparedLoopSample(pcm, LoopDescriptor.None, 0.0, LoopPreparationDiagnostics.None);
+        }
+
+        return loopPolicyMode switch
+        {
+            MidiSf2LoopPolicy.Advanced => PrepareAdvancedLoopAlignedSample(pcm, loopDescriptor, enableShortLoopPitchCompensation, enableLoopMicroCrossfade),
+            MidiSf2LoopPolicy.AutoLoop => PrepareAutoLoopAlignedSample(pcm, loopDescriptor, enableLoopMicroCrossfade, preferOriginalLoopWindow: false),
+            MidiSf2LoopPolicy.AdvancedAutoLoop => PrepareAutoLoopAlignedSample(pcm, loopDescriptor, enableLoopMicroCrossfade, preferOriginalLoopWindow: true),
+            _ => PrepareSafeLoopAlignedSample(pcm, loopDescriptor, enableShortLoopPitchCompensation, enableLoopMicroCrossfade),
+        };
+    }
+
+    private static PreparedLoopSample PrepareSafeLoopAlignedSample(
+        short[] pcm,
+        LoopDescriptor loopDescriptor,
+        bool enableShortLoopPitchCompensation,
+        bool enableLoopMicroCrossfade)
+    {
+        if (!loopDescriptor.Looping || pcm.Length == 0)
+        {
+            return new PreparedLoopSample(pcm, LoopDescriptor.None, 0.0, LoopPreparationDiagnostics.None);
         }
 
         var safeLoopStart = loopDescriptor.ResolveStartSamples(pcm.Length);
@@ -3307,33 +3874,58 @@ public static class BgmMidiSf2Rebuilder
         var safeLoopEnd = safeLoopLength > 0
             ? Math.Clamp(safeLoopStart + safeLoopLength, safeLoopStart + 1, pcm.Length)
             : pcm.Length;
+        var originalContinuityError = MeasureLoopContinuityError(pcm, safeLoopStart, safeLoopEnd);
+        var originalLoopLength = Math.Max(0, safeLoopEnd - safeLoopStart);
+
         if (safeLoopEnd < pcm.Length)
         {
-            // PSX ADPCM has a loop-start flag but no separate SF2-style loop-end marker;
-            // trim the stored sample to the requested loop end so the in-game loop wraps correctly.
-            var loopBoundedPcm = new short[safeLoopEnd];
-            Array.Copy(pcm, loopBoundedPcm, safeLoopEnd);
-            pcm = loopBoundedPcm;
+            pcm = TrimPcmToLength(pcm, safeLoopEnd);
             loopDescriptor = LoopDescriptor.FromSamples(true, safeLoopStart, pcm.Length, loopDescriptor.Type);
         }
 
-        var remainder = safeLoopStart % 28;
+        var remainder = safeLoopStart % PsxAdpcmFrameSamples;
         if (remainder == 0)
         {
-            return new PreparedLoopSample(pcm, LoopDescriptor.FromSamples(true, safeLoopStart, pcm.Length, loopDescriptor.Type), 0.0);
+            var preparedLoop = LoopDescriptor.FromSamples(true, safeLoopStart, pcm.Length, loopDescriptor.Type);
+            var diagnostics = BuildLoopPreparationDiagnostics(
+                safeLoopStart,
+                safeLoopEnd,
+                originalLoopLength,
+                safeLoopStart,
+                pcm.Length,
+                originalContinuityError,
+                MeasureLoopContinuityError(pcm, safeLoopStart, pcm.Length),
+                tailPaddingSamples: 0,
+                loopEndCandidateDiagnostics: [],
+                enableLoopMicroCrossfade,
+                crossfadeApplied: false,
+                crossfadeLength: 0);
+            return new PreparedLoopSample(pcm, preparedLoop, 0.0, diagnostics);
         }
 
-        var originalLoopLength = pcm.Length - safeLoopStart;
         if (enableShortLoopPitchCompensation &&
             originalLoopLength > 0 &&
             originalLoopLength <= ShortLoopAlignmentThresholdSamples)
         {
             var alignedLoopStart = AlignToNearestAdpcmBoundary(safeLoopStart, allowZero: true);
             var alignedLoopLength = AlignToNearestAdpcmBoundary(originalLoopLength, allowZero: false);
-
             if (alignedLoopStart == safeLoopStart && alignedLoopLength == originalLoopLength)
             {
-                return new PreparedLoopSample(pcm, LoopDescriptor.FromSamples(true, safeLoopStart, pcm.Length, loopDescriptor.Type), 0.0);
+                var noOpLoop = LoopDescriptor.FromSamples(true, safeLoopStart, pcm.Length, loopDescriptor.Type);
+                var noOpDiagnostics = BuildLoopPreparationDiagnostics(
+                    safeLoopStart,
+                    safeLoopEnd,
+                    originalLoopLength,
+                    safeLoopStart,
+                    pcm.Length,
+                    originalContinuityError,
+                    MeasureLoopContinuityError(pcm, safeLoopStart, pcm.Length),
+                    tailPaddingSamples: 0,
+                    loopEndCandidateDiagnostics: [],
+                    enableLoopMicroCrossfade,
+                    crossfadeApplied: false,
+                    crossfadeLength: 0);
+                return new PreparedLoopSample(pcm, noOpLoop, 0.0, noOpDiagnostics);
             }
 
             var intro = alignedLoopStart > 0
@@ -3347,29 +3939,774 @@ public static class BgmMidiSf2Rebuilder
             }
 
             Buffer.BlockCopy(loop, 0, rebuilt, intro.Length * sizeof(short), loop.Length * sizeof(short));
-            var pitchOffsetSemitones = 12.0 * Math.Log(originalLoopLength / (double)alignedLoopLength, 2.0);
-            return new PreparedLoopSample(rebuilt, LoopDescriptor.FromSamples(true, alignedLoopStart, rebuilt.Length, loopDescriptor.Type), pitchOffsetSemitones);
+            var rebuiltLoop = LoopDescriptor.FromSamples(true, alignedLoopStart, rebuilt.Length, loopDescriptor.Type);
+            var rebuiltDiagnostics = BuildLoopPreparationDiagnostics(
+                safeLoopStart,
+                safeLoopEnd,
+                originalLoopLength,
+                alignedLoopStart,
+                rebuilt.Length,
+                originalContinuityError,
+                MeasureLoopContinuityError(rebuilt, alignedLoopStart, rebuilt.Length),
+                tailPaddingSamples: 0,
+                loopEndCandidateDiagnostics: [],
+                enableLoopMicroCrossfade,
+                crossfadeApplied: false,
+                crossfadeLength: 0);
+            return new PreparedLoopSample(rebuilt, rebuiltLoop, CalculateLoopLengthPitchOffset(originalLoopLength, alignedLoopLength), rebuiltDiagnostics);
         }
 
-        // For short looping instrument samples, inserting duplicated PCM at the loop point
-        // can create an audible stutter each time the sample wraps. Prefer a conservative
-        // block-aligned loop that starts slightly earlier over duplicating audio content.
-        return new PreparedLoopSample(pcm, LoopDescriptor.FromSamples(true, safeLoopStart - remainder, pcm.Length, loopDescriptor.Type), 0.0);
+        var shiftedLoopStart = safeLoopStart - remainder;
+        var shiftedLoopLength = pcm.Length - shiftedLoopStart;
+        var shiftedLoop = LoopDescriptor.FromSamples(true, shiftedLoopStart, pcm.Length, loopDescriptor.Type);
+        var shiftedDiagnostics = BuildLoopPreparationDiagnostics(
+            safeLoopStart,
+            safeLoopEnd,
+            originalLoopLength,
+            shiftedLoopStart,
+            pcm.Length,
+            originalContinuityError,
+            MeasureLoopContinuityError(pcm, shiftedLoopStart, pcm.Length),
+            tailPaddingSamples: 0,
+            loopEndCandidateDiagnostics: [],
+            enableLoopMicroCrossfade,
+            crossfadeApplied: false,
+            crossfadeLength: 0);
+        return new PreparedLoopSample(pcm, shiftedLoop, CalculateLoopLengthPitchOffset(originalLoopLength, shiftedLoopLength), shiftedDiagnostics);
     }
+
+    private static PreparedLoopSample PrepareAutoLoopAlignedSample(
+        short[] pcm,
+        LoopDescriptor loopDescriptor,
+        bool enableLoopMicroCrossfade,
+        bool preferOriginalLoopWindow)
+    {
+        if (!loopDescriptor.Looping || pcm.Length == 0)
+        {
+            return new PreparedLoopSample(pcm, LoopDescriptor.None, 0.0, LoopPreparationDiagnostics.None);
+        }
+
+        var originalLoopStart = loopDescriptor.ResolveStartSamples(pcm.Length);
+        var originalLoopLength = loopDescriptor.ResolveLengthSamples(pcm.Length);
+        var originalLoopEnd = originalLoopLength > 0
+            ? Math.Clamp(originalLoopStart + originalLoopLength, originalLoopStart + 1, pcm.Length)
+            : pcm.Length;
+        var originalContinuityError = MeasureLoopContinuityError(pcm, originalLoopStart, originalLoopEnd);
+
+        var selection = TrySelectAutoLoopCandidate(pcm, loopDescriptor.Type, originalLoopStart, originalLoopEnd, preferOriginalLoopWindow, out var selected)
+            ? selected
+            : CreateAutoLoopFallbackCandidate(pcm, loopDescriptor.Type);
+        if (selection.EndSample <= selection.StartSample)
+        {
+            return new PreparedLoopSample(pcm, LoopDescriptor.None, 0.0, LoopPreparationDiagnostics.None);
+        }
+
+        var preparedPcm = TrimPcmToLength(pcm, selection.EndSample);
+        var postAlignmentError = MeasureLoopContinuityError(preparedPcm, selection.StartSample, preparedPcm.Length);
+        var crossfadeApplied = TryApplyConservativeAutoLoopCrossfade(
+            preparedPcm,
+            selection.StartSample,
+            Math.Max(postAlignmentError, selection.DecodedAdpcmContinuityError),
+            loopDescriptor.Type,
+            out var crossfadeLength);
+        if (crossfadeApplied)
+        {
+            postAlignmentError = MeasureLoopContinuityError(preparedPcm, selection.StartSample, preparedPcm.Length);
+        }
+
+        var preparedLoop = LoopDescriptor.FromSamples(true, selection.StartSample, preparedPcm.Length, loopDescriptor.Type);
+        var diagnostics = BuildLoopPreparationDiagnostics(
+            originalLoopStart,
+            originalLoopEnd,
+            Math.Max(0, originalLoopEnd - originalLoopStart),
+            selection.StartSample,
+            preparedPcm.Length,
+            originalContinuityError,
+            postAlignmentError,
+            tailPaddingSamples: 0,
+            loopEndCandidateDiagnostics: [CreateAutoLoopCandidateDiagnostics(selection, originalLoopEnd)],
+            crossfadeEnabled: true,
+            crossfadeApplied,
+            crossfadeLength);
+
+        // Auto-loop replaces the loop window itself. Like Polyphone's auto-loop tool,
+        // it should not retune the sample just because it selected a different loop length.
+        return new PreparedLoopSample(preparedPcm, preparedLoop, 0.0, diagnostics);
+    }
+
+    private static PreparedLoopSample PrepareAdvancedLoopAlignedSample(
+        short[] pcm,
+        LoopDescriptor loopDescriptor,
+        bool enableShortLoopPitchCompensation,
+        bool enableLoopMicroCrossfade)
+    {
+        if (!loopDescriptor.Looping || pcm.Length == 0)
+        {
+            return new PreparedLoopSample(pcm, LoopDescriptor.None, 0.0, LoopPreparationDiagnostics.None);
+        }
+
+        var safeLoopStart = loopDescriptor.ResolveStartSamples(pcm.Length);
+        var safeLoopLength = loopDescriptor.ResolveLengthSamples(pcm.Length);
+        var safeLoopEnd = safeLoopLength > 0
+            ? Math.Clamp(safeLoopStart + safeLoopLength, safeLoopStart + 1, pcm.Length)
+            : pcm.Length;
+        var originalContinuityError = MeasureLoopContinuityError(pcm, safeLoopStart, safeLoopEnd);
+        var originalLoopLength = Math.Max(0, safeLoopEnd - safeLoopStart);
+
+        var preparedLoopStart = safeLoopStart;
+        var pitchOffsetSemitones = 0.0;
+        var preparedPcm = pcm;
+        var loopEndAlreadyPrepared = false;
+        IReadOnlyList<LoopEndCandidateDiagnostics> loopEndCandidateDiagnostics = [];
+        var remainder = safeLoopStart % PsxAdpcmFrameSamples;
+
+        if (remainder != 0)
+        {
+            var trimmedLoopLength = Math.Max(0, pcm.Length - safeLoopStart);
+            if (enableShortLoopPitchCompensation &&
+                trimmedLoopLength > 0 &&
+                trimmedLoopLength <= ShortLoopAlignmentThresholdSamples)
+            {
+                var aligned = AlignLoopPitchSafeFromEnd(preparedPcm, safeLoopStart, safeLoopEnd, loopDescriptor.Type);
+                preparedPcm = aligned.Pcm;
+                preparedLoopStart = aligned.AlignedLoopStart;
+                loopEndAlreadyPrepared = true;
+            }
+            else
+            {
+                // Restore the v0.9.2-safe behavior: move only the loop-start flag down to
+                // the previous ADPCM frame boundary and leave PCM/end timing untouched.
+                preparedLoopStart = safeLoopStart - remainder;
+            }
+        }
+
+        if (!loopEndAlreadyPrepared)
+        {
+            var loopEndSelection = SelectLoopEndForAdpcmWrap(preparedPcm, preparedLoopStart, safeLoopEnd, loopDescriptor.Type);
+            preparedPcm = loopEndSelection.Pcm;
+            loopEndCandidateDiagnostics = loopEndSelection.Candidates;
+
+            var preparedLoopLength = Math.Max(1, preparedPcm.Length - preparedLoopStart);
+            if (originalLoopLength > 0 && preparedLoopLength != originalLoopLength)
+            {
+                pitchOffsetSemitones += 12.0 * Math.Log(originalLoopLength / (double)preparedLoopLength, 2.0);
+            }
+        }
+
+        if (enableShortLoopPitchCompensation)
+        {
+            var smoothed = ApplyShortLoopAdpcmTailSmoothing(preparedPcm, preparedLoopStart);
+            if (smoothed.Pcm.Length != preparedPcm.Length)
+            {
+                var previousLoopLength = Math.Max(1, preparedPcm.Length - preparedLoopStart);
+                var smoothedLoopLength = Math.Max(1, smoothed.Pcm.Length - smoothed.AlignedLoopStart);
+                pitchOffsetSemitones += 12.0 * Math.Log(previousLoopLength / (double)smoothedLoopLength, 2.0);
+            }
+
+            preparedPcm = smoothed.Pcm;
+            preparedLoopStart = smoothed.AlignedLoopStart;
+        }
+
+        var crossfadeApplied = false;
+        var crossfadeAutoFallback = false;
+        var crossfadeLength = 0;
+        var postAlignmentError = MeasureLoopContinuityError(preparedPcm, preparedLoopStart, preparedPcm.Length);
+        if (enableLoopMicroCrossfade &&
+            postAlignmentError >= LoopMicroCrossfadeContinuityThreshold &&
+            TryApplyLoopMicroCrossfade(preparedPcm, preparedLoopStart, loopDescriptor.Type, out crossfadeLength))
+        {
+            crossfadeApplied = true;
+            postAlignmentError = MeasureLoopContinuityError(preparedPcm, preparedLoopStart, preparedPcm.Length);
+        }
+
+        var tailPaddingSamples = 0;
+        preparedPcm = PadLoopTailToAdpcmBoundaryFromLoopStart(preparedPcm, preparedLoopStart, out tailPaddingSamples);
+        if (tailPaddingSamples != 0)
+        {
+            postAlignmentError = MeasureLoopContinuityError(preparedPcm, preparedLoopStart, preparedPcm.Length);
+        }
+
+        var preparedLoop = LoopDescriptor.FromSamples(true, preparedLoopStart, preparedPcm.Length, loopDescriptor.Type);
+        var diagnostics = new LoopPreparationDiagnostics(
+            Looping: true,
+            OriginalStartSample: safeLoopStart,
+            OriginalEndSample: safeLoopEnd,
+            OriginalLengthSamples: originalLoopLength,
+            AlignedStartSample: preparedLoopStart,
+            AlignedEndSample: preparedPcm.Length,
+            AlignedLengthSamples: Math.Max(0, preparedPcm.Length - preparedLoopStart),
+            StartShiftSamples: preparedLoopStart - safeLoopStart,
+            LoopStartContentShiftSamples: 0,
+            LoopEndContentPrefixSamples: 0,
+            EndShiftSamples: preparedPcm.Length - safeLoopEnd,
+            TailPaddingSamples: tailPaddingSamples,
+            LoopEndCandidates: loopEndCandidateDiagnostics,
+            ContinuityErrorBefore: originalContinuityError,
+            ContinuityErrorAfter: postAlignmentError,
+            CrossfadeEnabled: enableLoopMicroCrossfade,
+            CrossfadeApplied: crossfadeApplied,
+            CrossfadeAutoFallback: crossfadeAutoFallback,
+            CrossfadeLengthSamples: crossfadeLength,
+            AdpcmErrorFeedbackScale: PsxAdpcmEncoder.DefaultErrorFeedbackScale,
+            DecodedAdpcmContinuityErrorAfter: 0.0,
+            DecodedAdpcmSlopeErrorAfter: 0.0,
+            DecodedAdpcmStateMismatchErrorAfter: 0.0);
+
+        return new PreparedLoopSample(preparedPcm, preparedLoop, pitchOffsetSemitones, diagnostics);
+    }
+
+    private static bool TrySelectAutoLoopCandidate(
+        short[] pcm,
+        LoopType loopType,
+        int originalLoopStart,
+        int originalLoopEnd,
+        bool preferOriginalLoopWindow,
+        out AutoLoopCandidateEvaluation selection)
+    {
+        selection = AutoLoopCandidateEvaluation.Invalid;
+        var alignedMaximumEnd = (pcm.Length / PsxAdpcmFrameSamples) * PsxAdpcmFrameSamples;
+        if (alignedMaximumEnd <= AutoLoopMinLengthSamples)
+        {
+            return false;
+        }
+
+        var endCandidates = new HashSet<int>();
+        if (preferOriginalLoopWindow)
+        {
+            var originalAlignedEnd = AlignToNearestAdpcmBoundary(
+                Math.Clamp(originalLoopEnd, AutoLoopMinLengthSamples, alignedMaximumEnd),
+                allowZero: false);
+            for (var offset = -AutoLoopEndCandidateCount; offset <= AutoLoopEndCandidateCount; offset++)
+            {
+                var end = originalAlignedEnd + (offset * PsxAdpcmFrameSamples);
+                if (end > AutoLoopMinLengthSamples && end <= alignedMaximumEnd)
+                {
+                    endCandidates.Add(end);
+                }
+            }
+        }
+        else
+        {
+            for (var index = 0; index < AutoLoopEndCandidateCount; index++)
+            {
+                var end = alignedMaximumEnd - (index * PsxAdpcmFrameSamples);
+                if (end > AutoLoopMinLengthSamples)
+                {
+                    endCandidates.Add(end);
+                }
+            }
+        }
+
+        if (endCandidates.Count == 0)
+        {
+            return false;
+        }
+
+        var pcmCandidates = new List<AutoLoopCandidateEvaluation>();
+        foreach (var end in endCandidates.OrderBy(static end => end))
+        {
+            var searchStartFloor = preferOriginalLoopWindow
+                ? Math.Max(0, originalLoopStart - AutoLoopMaxSearchSamples)
+                : Math.Max(0, end - AutoLoopMaxSearchSamples);
+            var latestStart = preferOriginalLoopWindow
+                ? Math.Min(end - AutoLoopMinLengthSamples, originalLoopStart + AutoLoopMaxSearchSamples)
+                : end - AutoLoopMinLengthSamples;
+            latestStart = (latestStart / PsxAdpcmFrameSamples) * PsxAdpcmFrameSamples;
+            for (var start = latestStart; start >= searchStartFloor; start -= PsxAdpcmFrameSamples)
+            {
+                if (start < 0 || start >= end)
+                {
+                    continue;
+                }
+
+                var continuity = MeasureLoopContinuityError(pcm, start, end);
+                var slope = MeasureLoopSlopeErrorWithClamp(pcm, start, end);
+                var loopLength = Math.Max(1, end - start);
+                var zeroPenalty = 0.0;
+                if (!HasZeroCrossingNearWithClamp(pcm, start))
+                {
+                    zeroPenalty += 1.0;
+                }
+
+                if (!HasZeroCrossingNearWithClamp(pcm, end - 1))
+                {
+                    zeroPenalty += 1.0;
+                }
+
+                // Polyphone favors low seam error and long sustainable regions. We keep
+                // that idea, but constrain candidates to WD/PSX 28-sample frame borders.
+                var lengthScore = Math.Max(3.0, AutoLoopMaxSearchSamples / (double)loopLength);
+                var endDistanceScore = preferOriginalLoopWindow
+                    ? Math.Abs(end - originalLoopEnd) * 2.0
+                    : Math.Abs(pcm.Length - end) * 16.0;
+                var startDistanceScore = preferOriginalLoopWindow
+                    ? Math.Abs(start - originalLoopStart) * 2.0
+                    : 0.0;
+                var score =
+                    continuity +
+                    (slope * 0.12) +
+                    (zeroPenalty * 256.0) +
+                    (lengthScore * 32.0) +
+                    startDistanceScore +
+                    endDistanceScore;
+                pcmCandidates.Add(new AutoLoopCandidateEvaluation(
+                    StartSample: start,
+                    EndSample: end,
+                    LengthSamples: loopLength,
+                    Score: score,
+                    ContinuityError: continuity,
+                    SlopeError: slope,
+                    DecodedAdpcmContinuityError: continuity,
+                    DecodedAdpcmSlopeError: slope,
+                    DecodedAdpcmStateMismatchError: 0.0));
+            }
+        }
+
+        var decodedCandidates = pcmCandidates
+            .OrderBy(static candidate => candidate.Score)
+            .ThenByDescending(static candidate => candidate.StartSample)
+            .Take(AutoLoopPcmCandidateLimit)
+            .Select(candidate =>
+            {
+                var candidatePcm = TrimPcmToLength(pcm, candidate.EndSample);
+                var decodedScore = MeasureDecodedAdpcmLoopCandidate(candidatePcm, candidate.StartSample, loopType);
+                if (!decodedScore.Valid)
+                {
+                    return candidate;
+                }
+
+                var score =
+                    candidate.Score +
+                    decodedScore.ContinuityError +
+                    (decodedScore.SlopeError * 0.30) +
+                    (decodedScore.StateMismatchError * 0.75);
+                return candidate with
+                {
+                    Score = score,
+                    DecodedAdpcmContinuityError = decodedScore.ContinuityError,
+                    DecodedAdpcmSlopeError = decodedScore.SlopeError,
+                    DecodedAdpcmStateMismatchError = decodedScore.StateMismatchError,
+                };
+            })
+            .ToList();
+
+        if (decodedCandidates.Count == 0)
+        {
+            return false;
+        }
+
+        selection = preferOriginalLoopWindow
+            ? decodedCandidates
+                .OrderBy(candidate => candidate.Score)
+                .ThenBy(candidate => Math.Abs(candidate.StartSample - originalLoopStart) + Math.Abs(candidate.EndSample - originalLoopEnd))
+                .ThenByDescending(static candidate => candidate.StartSample)
+                .First()
+            : decodedCandidates
+                .OrderBy(static candidate => candidate.Score)
+                .ThenByDescending(static candidate => candidate.StartSample)
+                .ThenBy(candidate => Math.Abs(candidate.EndSample - originalLoopEnd))
+                .First();
+        return true;
+    }
+
+    private static AutoLoopCandidateEvaluation CreateAutoLoopFallbackCandidate(short[] pcm, LoopType loopType)
+    {
+        var end = (pcm.Length / PsxAdpcmFrameSamples) * PsxAdpcmFrameSamples;
+        if (end <= PsxAdpcmFrameSamples)
+        {
+            return AutoLoopCandidateEvaluation.Invalid;
+        }
+
+        var targetLength = Math.Min(end, Math.Max(AutoLoopMinLengthSamples, Math.Min(AutoLoopMaxSearchSamples, end / 2)));
+        targetLength = AlignToNearestAdpcmBoundary(targetLength, allowZero: false);
+        var start = Math.Max(0, end - targetLength);
+        start = (start / PsxAdpcmFrameSamples) * PsxAdpcmFrameSamples;
+        if (start >= end)
+        {
+            start = Math.Max(0, end - PsxAdpcmFrameSamples);
+        }
+
+        var preparedPcm = TrimPcmToLength(pcm, end);
+        var loopLength = Math.Max(1, end - start);
+        var continuity = MeasureLoopContinuityError(preparedPcm, start, end);
+        var slope = MeasureLoopSlopeErrorWithClamp(preparedPcm, start, end);
+        var decodedScore = MeasureDecodedAdpcmLoopCandidate(preparedPcm, start, loopType);
+        var decodedContinuity = decodedScore.Valid ? decodedScore.ContinuityError : continuity;
+        var decodedSlope = decodedScore.Valid ? decodedScore.SlopeError : slope;
+        var decodedStateMismatch = decodedScore.Valid ? decodedScore.StateMismatchError : 0.0;
+        var score =
+            continuity +
+            (slope * 0.12) +
+            decodedContinuity +
+            (decodedSlope * 0.30) +
+            (decodedStateMismatch * 0.75);
+        return new AutoLoopCandidateEvaluation(
+            StartSample: start,
+            EndSample: end,
+            LengthSamples: loopLength,
+            Score: score,
+            ContinuityError: continuity,
+            SlopeError: slope,
+            DecodedAdpcmContinuityError: decodedContinuity,
+            DecodedAdpcmSlopeError: decodedSlope,
+            DecodedAdpcmStateMismatchError: decodedStateMismatch);
+    }
+
+    private static LoopPreparationDiagnostics BuildLoopPreparationDiagnostics(
+        int originalStartSample,
+        int originalEndSample,
+        int originalLengthSamples,
+        int alignedStartSample,
+        int alignedEndSample,
+        double continuityErrorBefore,
+        double continuityErrorAfter,
+        int tailPaddingSamples,
+        IReadOnlyList<LoopEndCandidateDiagnostics> loopEndCandidateDiagnostics,
+        bool crossfadeEnabled,
+        bool crossfadeApplied,
+        int crossfadeLength)
+        => new(
+            Looping: true,
+            OriginalStartSample: originalStartSample,
+            OriginalEndSample: originalEndSample,
+            OriginalLengthSamples: originalLengthSamples,
+            AlignedStartSample: alignedStartSample,
+            AlignedEndSample: alignedEndSample,
+            AlignedLengthSamples: Math.Max(0, alignedEndSample - alignedStartSample),
+            StartShiftSamples: alignedStartSample - originalStartSample,
+            LoopStartContentShiftSamples: 0,
+            LoopEndContentPrefixSamples: 0,
+            EndShiftSamples: alignedEndSample - originalEndSample,
+            TailPaddingSamples: tailPaddingSamples,
+            LoopEndCandidates: loopEndCandidateDiagnostics,
+            ContinuityErrorBefore: SanitizeMetric(continuityErrorBefore),
+            ContinuityErrorAfter: SanitizeMetric(continuityErrorAfter),
+            CrossfadeEnabled: crossfadeEnabled,
+            CrossfadeApplied: crossfadeApplied,
+            CrossfadeAutoFallback: false,
+            CrossfadeLengthSamples: crossfadeLength,
+            AdpcmErrorFeedbackScale: PsxAdpcmEncoder.DefaultErrorFeedbackScale,
+            DecodedAdpcmContinuityErrorAfter: 0.0,
+            DecodedAdpcmSlopeErrorAfter: 0.0,
+            DecodedAdpcmStateMismatchErrorAfter: 0.0);
+
+    private static LoopEndCandidateDiagnostics CreateAutoLoopCandidateDiagnostics(
+        AutoLoopCandidateEvaluation candidate,
+        int originalLoopEnd)
+        => new(
+            Strategy: "auto-loop",
+            Selected: true,
+            EndSample: candidate.EndSample,
+            EndShiftSamples: candidate.EndSample - originalLoopEnd,
+            LengthSamples: candidate.LengthSamples,
+            Score: SanitizeMetric(candidate.Score),
+            ContinuityError: SanitizeMetric(candidate.ContinuityError),
+            SlopeError: SanitizeMetric(candidate.SlopeError),
+            DecodedAdpcmContinuityError: SanitizeMetric(candidate.DecodedAdpcmContinuityError),
+            DecodedAdpcmSlopeError: SanitizeMetric(candidate.DecodedAdpcmSlopeError),
+            DecodedAdpcmStateMismatchError: SanitizeMetric(candidate.DecodedAdpcmStateMismatchError));
+
+    private static LoopPreparationDiagnostics AddDecodedAdpcmLoopDiagnostics(
+        LoopPreparationDiagnostics diagnostics,
+        byte[] encodedBytes,
+        LoopDescriptor effectiveLoopDescriptor)
+    {
+        if (!diagnostics.Looping)
+        {
+            return diagnostics;
+        }
+
+        var decodedScore = MeasureDecodedAdpcmLoopTransition(encodedBytes, effectiveLoopDescriptor);
+        if (!decodedScore.Valid)
+        {
+            return diagnostics;
+        }
+
+        return diagnostics with
+        {
+            DecodedAdpcmContinuityErrorAfter = SanitizeMetric(decodedScore.ContinuityError),
+            DecodedAdpcmSlopeErrorAfter = SanitizeMetric(decodedScore.SlopeError),
+            DecodedAdpcmStateMismatchErrorAfter = SanitizeMetric(decodedScore.StateMismatchError),
+        };
+    }
+
+    private static short[] PadLoopTailToAdpcmBoundaryFromLoopStart(short[] pcm, int loopStart, out int paddingSamples)
+    {
+        paddingSamples = 0;
+        if (pcm.Length == 0 || loopStart < 0 || loopStart >= pcm.Length)
+        {
+            return pcm;
+        }
+
+        var remainder = pcm.Length % PsxAdpcmFrameSamples;
+        if (remainder == 0)
+        {
+            return pcm;
+        }
+
+        paddingSamples = PsxAdpcmFrameSamples - remainder;
+        var output = new short[pcm.Length + paddingSamples];
+        Buffer.BlockCopy(pcm, 0, output, 0, pcm.Length * sizeof(short));
+        var loopLength = Math.Max(1, pcm.Length - loopStart);
+        for (var index = 0; index < paddingSamples; index++)
+        {
+            output[pcm.Length + index] = output[loopStart + (index % loopLength)];
+        }
+
+        return output;
+    }
+
+    private static LoopEndSelection SelectLoopEndForAdpcmWrap(short[] pcm, int loopStart, int originalLoopEnd, LoopType loopType)
+    {
+        if (pcm.Length == 0 || loopStart < 0 || loopStart >= pcm.Length)
+        {
+            return new LoopEndSelection(pcm, Math.Clamp(originalLoopEnd, 0, Math.Max(0, pcm.Length)), []);
+        }
+
+        var minEnd = Math.Max(loopStart + 1, originalLoopEnd - LoopPitchSafeCandidateRadiusSamples);
+        var maxEnd = originalLoopEnd + LoopPitchSafeCandidateRadiusSamples;
+        var candidates = new SortedSet<int>();
+        AddAlignedCandidatesAroundAnchor(candidates, originalLoopEnd);
+
+        var validCandidates = candidates
+            .Where(end => end > loopStart)
+            .Where(end => end >= minEnd && end <= maxEnd)
+            .Where(static end => end % PsxAdpcmFrameSamples == 0)
+            .OrderBy(end => Math.Abs(end - originalLoopEnd))
+            .ThenByDescending(static end => end)
+            .ToList();
+
+        var evaluations = new List<LoopEndCandidateEvaluation>();
+        foreach (var candidateEnd in validCandidates)
+        {
+            if (candidateEnd <= originalLoopEnd)
+            {
+                AddLoopEndCandidateEvaluation(evaluations, pcm, TrimPcmToLength(pcm, candidateEnd), loopStart, originalLoopEnd, candidateEnd, "trim", loopType);
+                continue;
+            }
+
+            if (candidateEnd <= pcm.Length)
+            {
+                AddLoopEndCandidateEvaluation(evaluations, pcm, TrimPcmToLength(pcm, candidateEnd), loopStart, originalLoopEnd, candidateEnd, "source_tail", loopType);
+            }
+
+            AddLoopEndCandidateEvaluation(evaluations, pcm, CreateLoopAlignmentBridgePcm(pcm, loopStart, originalLoopEnd, candidateEnd), loopStart, originalLoopEnd, candidateEnd, "bridge_tail", loopType);
+        }
+
+        if (validCandidates.Count == 0)
+        {
+            var fallback = Math.Clamp(originalLoopEnd, loopStart + 1, pcm.Length);
+            var alignedFallback = (fallback / PsxAdpcmFrameSamples) * PsxAdpcmFrameSamples;
+            var fallbackEnd = alignedFallback > loopStart ? alignedFallback : fallback;
+            var fallbackPcm = fallbackEnd <= pcm.Length
+                ? TrimPcmToLength(pcm, fallbackEnd)
+                : AdjustPcmLengthPreserveTail(pcm, fallbackEnd);
+            return new LoopEndSelection(fallbackPcm, fallbackEnd, []);
+        }
+
+        if (evaluations.Count == 0)
+        {
+            return new LoopEndSelection(pcm, pcm.Length, []);
+        }
+
+        var best = evaluations
+            .OrderBy(static evaluation => evaluation.Score)
+            .ThenBy(static evaluation => evaluation.Strategy == "bridge_tail" ? 0 : 1)
+            .ThenBy(evaluation => Math.Abs(evaluation.EndSample - originalLoopEnd))
+            .ThenByDescending(static evaluation => evaluation.EndSample)
+            .First();
+        best = PreferForwardBridgeOverAggressiveTrim(evaluations, best);
+        var diagnostics = evaluations
+            .OrderBy(static evaluation => evaluation.EndSample)
+            .ThenBy(static evaluation => evaluation.Strategy)
+            .Select(evaluation => CreateLoopEndCandidateDiagnostics(evaluation, ReferenceEquals(evaluation, best)))
+            .ToList();
+        return new LoopEndSelection(best.Pcm, best.EndSample, diagnostics);
+    }
+
+    private static LoopEndCandidateDiagnostics CreateLoopEndCandidateDiagnostics(
+        LoopEndCandidateEvaluation evaluation,
+        bool selected)
+        => new(
+            evaluation.Strategy,
+            selected,
+            evaluation.EndSample,
+            evaluation.EndShiftSamples,
+            evaluation.LengthSamples,
+            SanitizeMetric(evaluation.Score),
+            SanitizeMetric(evaluation.ContinuityError),
+            SanitizeMetric(evaluation.SlopeError),
+            SanitizeMetric(evaluation.DecodedAdpcmContinuityError),
+            SanitizeMetric(evaluation.DecodedAdpcmSlopeError),
+            SanitizeMetric(evaluation.DecodedAdpcmStateMismatchError));
+
+    private static LoopEndCandidateEvaluation PreferForwardBridgeOverAggressiveTrim(
+        IReadOnlyList<LoopEndCandidateEvaluation> evaluations,
+        LoopEndCandidateEvaluation best)
+    {
+        if (best.Strategy != "trim" || best.EndShiftSamples >= -PsxAdpcmFrameSamples)
+        {
+            return best;
+        }
+
+        var bridge = evaluations
+            .Where(static evaluation => evaluation.Strategy == "bridge_tail")
+            .Where(static evaluation => evaluation.EndShiftSamples is >= 0 and <= PsxAdpcmFrameSamples)
+            .OrderBy(static evaluation => evaluation.EndShiftSamples)
+            .ThenBy(static evaluation => evaluation.Score)
+            .FirstOrDefault();
+        if (bridge is null)
+        {
+            return best;
+        }
+
+        var similarOverallScore = bridge.Score <= best.Score * 1.25;
+        var tolerablePcmSeam = bridge.ContinuityError <= best.ContinuityError * 1.25;
+        var tolerableDecodedWrap = bridge.DecodedAdpcmContinuityError <= Math.Max(4096.0, best.DecodedAdpcmContinuityError * 5.0);
+        var betterStateMismatch = bridge.DecodedAdpcmStateMismatchError <= best.DecodedAdpcmStateMismatchError;
+        return similarOverallScore && tolerablePcmSeam && tolerableDecodedWrap && betterStateMismatch
+            ? bridge
+            : best;
+    }
+
+    private static void AddLoopEndCandidateEvaluation(
+        List<LoopEndCandidateEvaluation> evaluations,
+        short[] sourcePcm,
+        short[] candidatePcm,
+        int loopStart,
+        int originalLoopEnd,
+        int candidateEnd,
+        string strategy,
+        LoopType loopType)
+    {
+        if (candidatePcm.Length == 0 || loopStart < 0 || loopStart >= candidatePcm.Length)
+        {
+            return;
+        }
+
+        var loopLength = Math.Max(1, candidatePcm.Length - loopStart);
+        var continuity = MeasureLoopContinuityError(candidatePcm, loopStart, candidatePcm.Length);
+        var slope = MeasureLoopSlopeErrorWithClamp(candidatePcm, loopStart, candidatePcm.Length);
+        var decodedScore = MeasureDecodedAdpcmLoopCandidate(candidatePcm, loopStart, loopType);
+        var zeroPenalty = 0.0;
+        if (!HasZeroCrossingNearWithClamp(sourcePcm, loopStart))
+        {
+            zeroPenalty += 1.0;
+        }
+
+        if (!HasZeroCrossingNearWithClamp(candidatePcm, candidatePcm.Length - 1))
+        {
+            zeroPenalty += 1.0;
+        }
+
+        var decodedContinuity = decodedScore.Valid ? decodedScore.ContinuityError : continuity;
+        var decodedSlope = decodedScore.Valid ? decodedScore.SlopeError : slope;
+        var decodedStateMismatch = decodedScore.Valid ? decodedScore.StateMismatchError : 0.0;
+        var distance = Math.Abs(candidateEnd - originalLoopEnd);
+        var strategyPenalty = strategy == "bridge_tail" ? 96.0 : 0.0;
+        var score =
+            decodedContinuity +
+            (decodedSlope * 0.30) +
+            (decodedStateMismatch * 0.65) +
+            (continuity * 0.70) +
+            (slope * 0.08) +
+            (distance * 48.0) +
+            (zeroPenalty * 256.0) +
+            strategyPenalty;
+        evaluations.Add(new LoopEndCandidateEvaluation(
+            candidatePcm,
+            strategy,
+            candidateEnd,
+            candidateEnd - originalLoopEnd,
+            loopLength,
+            score,
+            continuity,
+            slope,
+            decodedContinuity,
+            decodedSlope,
+            decodedStateMismatch));
+    }
+
+    private static short[] CreateLoopAlignmentBridgePcm(short[] pcm, int loopStart, int originalLoopEnd, int targetEnd)
+    {
+        originalLoopEnd = Math.Clamp(originalLoopEnd, 0, pcm.Length);
+        targetEnd = Math.Max(originalLoopEnd, targetEnd);
+        var output = new short[Math.Max(1, targetEnd)];
+        var copyLength = Math.Min(originalLoopEnd, pcm.Length);
+        if (copyLength > 0)
+        {
+            Buffer.BlockCopy(pcm, 0, output, 0, copyLength * sizeof(short));
+        }
+
+        var bridgeLength = targetEnd - originalLoopEnd;
+        if (bridgeLength <= 0)
+        {
+            return output;
+        }
+
+        for (var index = 0; index < bridgeLength; index++)
+        {
+            var fade = (index + 1) / (double)(bridgeLength + 1);
+            var tail = GetSampleWithClamp(pcm, originalLoopEnd - bridgeLength + index);
+            var preLoop = GetSampleWithClamp(pcm, loopStart - bridgeLength + index);
+            var bridged = (tail * (1.0 - fade)) + (preLoop * fade);
+            output[originalLoopEnd + index] = (short)Math.Clamp(
+                (int)Math.Round(bridged, MidpointRounding.AwayFromZero),
+                short.MinValue,
+                short.MaxValue);
+        }
+
+        return output;
+    }
+
+    private static short[] TrimPcmToLength(short[] pcm, int targetLength)
+    {
+        targetLength = Math.Clamp(targetLength, 0, pcm.Length);
+        if (targetLength == pcm.Length)
+        {
+            return pcm;
+        }
+
+        var adjusted = new short[targetLength];
+        if (targetLength > 0)
+        {
+            Buffer.BlockCopy(pcm, 0, adjusted, 0, targetLength * sizeof(short));
+        }
+
+        return adjusted;
+    }
+
+    private static double CalculateLoopLengthPitchOffset(int originalLoopLength, int effectiveLoopLength)
+    {
+        if (originalLoopLength <= 0 || effectiveLoopLength <= 0 || originalLoopLength == effectiveLoopLength)
+        {
+            return 0.0;
+        }
+
+        var pitchOffsetSemitones = 12.0 * Math.Log(originalLoopLength / (double)effectiveLoopLength, 2.0);
+        return double.IsNaN(pitchOffsetSemitones) || double.IsInfinity(pitchOffsetSemitones)
+            ? 0.0
+            : pitchOffsetSemitones;
+    }
+
+    private static double SanitizeMetric(double value)
+        => double.IsNaN(value) || double.IsInfinity(value)
+            ? double.MaxValue
+            : value;
 
     private static int AlignToNearestAdpcmBoundary(int sampleCount, bool allowZero)
     {
         if (sampleCount <= 0)
         {
-            return allowZero ? 0 : 28;
+            return allowZero ? 0 : PsxAdpcmFrameSamples;
         }
 
-        var lower = (sampleCount / 28) * 28;
-        var upper = lower == sampleCount ? lower : lower + 28;
+        var lower = (sampleCount / PsxAdpcmFrameSamples) * PsxAdpcmFrameSamples;
+        var upper = lower == sampleCount ? lower : lower + PsxAdpcmFrameSamples;
         if (!allowZero)
         {
-            lower = Math.Max(28, lower);
-            upper = Math.Max(28, upper);
+            lower = Math.Max(PsxAdpcmFrameSamples, lower);
+            upper = Math.Max(PsxAdpcmFrameSamples, upper);
         }
 
         if (allowZero && lower < 0)
@@ -3378,6 +4715,727 @@ public static class BgmMidiSf2Rebuilder
         }
 
         return Math.Abs(sampleCount - lower) <= Math.Abs(upper - sampleCount) ? lower : upper;
+    }
+
+    private static (LoopDescriptor EffectiveLoopDescriptor, double PitchOffsetSemitones) ResolveEncodedLoopPitchAdjustment(
+        byte[] encodedBytes,
+        LoopDescriptor requestedLoopDescriptor,
+        int pcmLength)
+    {
+        var normalizedRequested = requestedLoopDescriptor.NormalizeToSamples(pcmLength);
+        if (!normalizedRequested.Looping || encodedBytes.Length == 0)
+        {
+            return (normalizedRequested.Looping ? normalizedRequested : LoopDescriptor.None, 0.0);
+        }
+
+        var requestedLengthSamples = normalizedRequested.ResolveLengthSamples(pcmLength);
+        if (requestedLengthSamples <= 0)
+        {
+            return (normalizedRequested, 0.0);
+        }
+
+        var loopInfo = WdSampleTool.ResolvePreferredLoopInfo(encodedBytes, normalizedRequested);
+        if (!loopInfo.Looping || loopInfo.BlockCount <= 0)
+        {
+            return (normalizedRequested, 0.0);
+        }
+
+        var effectiveStartSamples = Math.Max(0, PsxAdpcmLoopMath.BytesToSamples(loopInfo.LoopStartBytes));
+        var effectiveTotalSamples = Math.Max(0, loopInfo.BlockCount * PsxAdpcmFrameSamples);
+        var effectiveLengthSamples = effectiveTotalSamples - effectiveStartSamples;
+        if (effectiveLengthSamples <= 0)
+        {
+            effectiveLengthSamples = requestedLengthSamples;
+        }
+
+        var effectiveLoop = LoopDescriptor.FromSampleLength(
+            true,
+            effectiveStartSamples,
+            effectiveLengthSamples,
+            normalizedRequested.Type);
+        var pitchOffsetSemitones = 12.0 * Math.Log(requestedLengthSamples / (double)effectiveLengthSamples, 2.0);
+        if (double.IsNaN(pitchOffsetSemitones) || double.IsInfinity(pitchOffsetSemitones))
+        {
+            pitchOffsetSemitones = 0.0;
+        }
+
+        return (effectiveLoop, pitchOffsetSemitones);
+    }
+
+    private static PitchSafeAlignedLoop ApplyShortLoopAdpcmTailSmoothing(short[] pcm, int loopStartSample)
+    {
+        if (pcm.Length == 0 || loopStartSample < 0 || loopStartSample >= pcm.Length)
+        {
+            return new PitchSafeAlignedLoop(pcm, Math.Clamp(loopStartSample, 0, Math.Max(0, pcm.Length - 1)));
+        }
+
+        var loopLength = pcm.Length - loopStartSample;
+        if (loopLength <= 0 || loopLength > ShortLoopSmoothingMaxLoopLengthSamples)
+        {
+            return new PitchSafeAlignedLoop(pcm, loopStartSample);
+        }
+
+        var remainder = loopLength % PsxAdpcmFrameSamples;
+        if (remainder == 0)
+        {
+            return new PitchSafeAlignedLoop(pcm, loopStartSample);
+        }
+
+        var targetLoopLength = loopLength + (PsxAdpcmFrameSamples - remainder);
+        var extension = targetLoopLength - loopLength;
+        if (extension <= 0)
+        {
+            return new PitchSafeAlignedLoop(pcm, loopStartSample);
+        }
+
+        var output = new short[loopStartSample + targetLoopLength];
+        Buffer.BlockCopy(pcm, 0, output, 0, pcm.Length * sizeof(short));
+        for (var index = 0; index < extension; index++)
+        {
+            // Repeat from the loop body (not zero-fill) to avoid creating a hard transient
+            // when the ADPCM encoder expands short loops to 28-sample block boundaries.
+            output[pcm.Length + index] = output[loopStartSample + (index % loopLength)];
+        }
+
+        return new PitchSafeAlignedLoop(output, loopStartSample);
+    }
+
+    private static PitchSafeAlignedLoop AlignLoopPitchSafeFromEnd(short[] pcm, int originalLoopStart, int originalLoopEnd, LoopType loopType)
+    {
+        if (pcm.Length == 0)
+        {
+            return new PitchSafeAlignedLoop(pcm, 0);
+        }
+
+        var safeLoopStart = Math.Clamp(originalLoopStart, 0, Math.Max(0, pcm.Length - 1));
+        var safeLoopEnd = Math.Clamp(originalLoopEnd, safeLoopStart + 1, pcm.Length);
+        var loopLength = Math.Max(1, safeLoopEnd - safeLoopStart);
+        var candidateStarts = EnumerateAlignedLoopStartsFromEnd(safeLoopStart, safeLoopEnd, pcm.Length, loopLength);
+        if (candidateStarts.Count == 0)
+        {
+            var fallbackStart = safeLoopStart - (safeLoopStart % PsxAdpcmFrameSamples);
+            var fallbackLength = Math.Max(1, fallbackStart + loopLength);
+            return new PitchSafeAlignedLoop(AdjustPcmLengthPreserveTail(pcm, fallbackLength), fallbackStart);
+        }
+
+        var bestStart = candidateStarts[0];
+        var bestScore = double.MaxValue;
+        foreach (var candidateStart in candidateStarts)
+        {
+            var candidateEnd = candidateStart + loopLength;
+            var distance = Math.Abs(candidateStart - safeLoopStart);
+            var continuity = MeasureLoopContinuityErrorWithClamp(pcm, candidateStart, candidateEnd, loopLength);
+            var slope = MeasureLoopSlopeErrorWithClamp(pcm, candidateStart, candidateEnd);
+            var candidatePcm = AdjustPcmLengthPreserveTail(pcm, Math.Max(1, candidateEnd));
+            var decodedScore = MeasureDecodedAdpcmLoopCandidate(candidatePcm, candidateStart, loopType);
+            var zeroPenalty = 0.0;
+            if (!HasZeroCrossingNearWithClamp(pcm, candidateStart))
+            {
+                zeroPenalty += 1.0;
+            }
+
+            if (!HasZeroCrossingNearWithClamp(pcm, candidateEnd - 1))
+            {
+                zeroPenalty += 1.0;
+            }
+
+            var decodedContinuity = decodedScore.Valid ? decodedScore.ContinuityError : continuity;
+            var decodedSlope = decodedScore.Valid ? decodedScore.SlopeError : slope;
+            var decodedStateMismatch = decodedScore.Valid ? decodedScore.StateMismatchError : 0.0;
+            var score =
+                decodedContinuity +
+                (decodedSlope * 0.35) +
+                (decodedStateMismatch * 0.20) +
+                (continuity * 0.25) +
+                (slope * 0.10) +
+                (distance * 64.0) +
+                (zeroPenalty * 256.0);
+            if (score < bestScore - 0.0001 ||
+                (Math.Abs(score - bestScore) <= 0.0001 && candidateStart > bestStart))
+            {
+                bestScore = score;
+                bestStart = candidateStart;
+            }
+        }
+
+        var targetLength = Math.Max(1, bestStart + loopLength);
+        return new PitchSafeAlignedLoop(AdjustPcmLengthPreserveTail(pcm, targetLength), bestStart);
+    }
+
+    private static DecodedAdpcmLoopScore MeasureDecodedAdpcmLoopCandidate(short[] pcm, int loopStartSample, LoopType loopType)
+    {
+        if (pcm.Length == 0 || loopStartSample < 0 || loopStartSample >= pcm.Length)
+        {
+            return DecodedAdpcmLoopScore.Invalid;
+        }
+
+        try
+        {
+            var loopDescriptor = LoopDescriptor.FromSamples(true, loopStartSample, pcm.Length, loopType);
+            var encodedBytes = PsxAdpcmEncoder.Encode(pcm, loopDescriptor);
+            return MeasureDecodedAdpcmLoopTransition(encodedBytes, loopDescriptor);
+        }
+        catch (InvalidOperationException)
+        {
+            return DecodedAdpcmLoopScore.Invalid;
+        }
+        catch (ArgumentException)
+        {
+            return DecodedAdpcmLoopScore.Invalid;
+        }
+    }
+
+    private static DecodedAdpcmLoopScore MeasureDecodedAdpcmLoopTransition(byte[] encodedBytes, LoopDescriptor fallbackLoopDescriptor)
+    {
+        if (encodedBytes.Length == 0 || !fallbackLoopDescriptor.Looping)
+        {
+            return DecodedAdpcmLoopScore.Invalid;
+        }
+
+        var loopInfo = WdSampleTool.ResolvePreferredLoopInfo(encodedBytes, fallbackLoopDescriptor);
+        if (!loopInfo.Looping)
+        {
+            return DecodedAdpcmLoopScore.Invalid;
+        }
+
+        var decoded = DecodePsxAdpcmToIntSamples(encodedBytes);
+        if (decoded.Length == 0)
+        {
+            return DecodedAdpcmLoopScore.Invalid;
+        }
+
+        var loopStart = loopInfo.LoopDescriptor.ResolveStartSamples(decoded.Length);
+        var loopLength = loopInfo.LoopDescriptor.ResolveLengthSamples(decoded.Length);
+        var loopEnd = loopLength > 0
+            ? Math.Clamp(loopStart + loopLength, loopStart + 1, decoded.Length)
+            : decoded.Length;
+        var window = Math.Min(LoopContinuityWindowSamples, Math.Min(loopEnd - loopStart, PsxAdpcmFrameSamples));
+        if (window <= 0)
+        {
+            return DecodedAdpcmLoopScore.Invalid;
+        }
+
+        var loopStartBlock = Math.Clamp(loopStart / PsxAdpcmFrameSamples, 0, Math.Max(0, (encodedBytes.Length / 0x10) - 1));
+        Span<int> wrapStart = stackalloc int[PsxAdpcmFrameSamples];
+        var previous1 = GetSampleWithClamp(decoded, loopEnd - 1);
+        var previous2 = GetSampleWithClamp(decoded, loopEnd - 2);
+        DecodePsxAdpcmBlockToIntSamples(
+            encodedBytes.AsSpan((loopStartBlock * 0x10) + 2, 14),
+            encodedBytes[loopStartBlock * 0x10],
+            ref previous1,
+            ref previous2,
+            wrapStart);
+
+        var continuity = MeasureLoopWrapContinuityError(decoded, loopEnd, wrapStart, window);
+        var slope = MeasureLoopWrapSlopeError(decoded, loopEnd, wrapStart, window);
+        var stateMismatch = MeasureLoopWrapStateMismatchError(decoded, loopStart, wrapStart, window);
+        return new DecodedAdpcmLoopScore(true, continuity, slope, stateMismatch);
+    }
+
+    private static int[] DecodePsxAdpcmToIntSamples(byte[] encodedBytes)
+    {
+        var blockCount = encodedBytes.Length / 0x10;
+        var pcm = new int[blockCount * PsxAdpcmFrameSamples];
+        var previous1 = 0;
+        var previous2 = 0;
+
+        for (var blockIndex = 0; blockIndex < blockCount; blockIndex++)
+        {
+            var blockOffset = blockIndex * 0x10;
+            DecodePsxAdpcmBlockToIntSamples(
+                encodedBytes.AsSpan(blockOffset + 2, 14),
+                encodedBytes[blockOffset],
+                ref previous1,
+                ref previous2,
+                pcm.AsSpan(blockIndex * PsxAdpcmFrameSamples, PsxAdpcmFrameSamples));
+        }
+
+        return pcm;
+    }
+
+    private static void DecodePsxAdpcmBlockToIntSamples(
+        ReadOnlySpan<byte> source,
+        byte predictorShift,
+        ref int previous1,
+        ref int previous2,
+        Span<int> destination)
+    {
+        var shift = predictorShift & 0x0F;
+        var filter = Math.Min((predictorShift >> 4) & 0x0F, 4);
+        var coef0 = PsxAdpcmCoefficients0[filter];
+        var coef1 = PsxAdpcmCoefficients1[filter];
+        var sample1 = previous1;
+        var sample2 = previous2;
+
+        for (var index = 0; index < PsxAdpcmFrameSamples; index++)
+        {
+            var packed = source[index >> 1];
+            var nibble = (index & 1) == 0 ? packed & 0x0F : packed >> 4;
+            var signedNibble = (sbyte)((nibble << 4) & 0xF0) >> 4;
+            var sample = (signedNibble << 12) >> shift;
+            sample += ((coef0 * sample1) + (coef1 * sample2)) >> 6;
+            sample = Math.Clamp(sample, short.MinValue, short.MaxValue);
+            destination[index] = sample;
+            sample2 = sample1;
+            sample1 = sample;
+        }
+
+        previous1 = sample1;
+        previous2 = sample2;
+    }
+
+    private static List<int> EnumerateAlignedLoopStartsFromEnd(int loopStart, int loopEnd, int pcmLength, int loopLength)
+    {
+        if (pcmLength <= 0 || loopLength <= 0)
+        {
+            return [];
+        }
+
+        var minCandidateEnd = Math.Max(loopStart + 1, loopEnd - LoopPitchSafeCandidateRadiusSamples);
+        var maxCandidateEnd = loopEnd + LoopPitchSafeCandidateRadiusSamples;
+        var candidates = new SortedSet<int>();
+
+        AddAlignedCandidatesAroundAnchor(candidates, loopStart);
+        var floorEnd = (loopEnd / PsxAdpcmFrameSamples) * PsxAdpcmFrameSamples;
+        var ceilEnd = floorEnd == loopEnd ? floorEnd : floorEnd + PsxAdpcmFrameSamples;
+        foreach (var endAnchor in new[]
+                 {
+                     floorEnd - PsxAdpcmFrameSamples,
+                     floorEnd,
+                     ceilEnd,
+                     ceilEnd + PsxAdpcmFrameSamples,
+                 })
+        {
+            AddAlignedCandidatesAroundAnchor(candidates, endAnchor - loopLength);
+        }
+
+        var ordered = candidates
+            .Where(start => start >= 0)
+            .Where(start =>
+            {
+                var end = start + loopLength;
+                return end >= minCandidateEnd && end <= maxCandidateEnd;
+            })
+            .OrderByDescending(static start => start)
+            .ToList();
+
+        return ordered.Count > 0 ? ordered : [Math.Max(0, loopStart - (loopStart % PsxAdpcmFrameSamples))];
+    }
+
+    private static void AddAlignedCandidatesAroundAnchor(SortedSet<int> candidates, int anchorSample)
+    {
+        var lower = (anchorSample / PsxAdpcmFrameSamples) * PsxAdpcmFrameSamples;
+        var upper = lower == anchorSample ? lower : lower + PsxAdpcmFrameSamples;
+        foreach (var aligned in new[]
+                 {
+                     lower - PsxAdpcmFrameSamples,
+                     lower,
+                     upper,
+                     upper + PsxAdpcmFrameSamples,
+                 })
+        {
+            if (aligned >= 0)
+            {
+                candidates.Add(aligned);
+            }
+        }
+    }
+
+    private static short[] AdjustPcmLengthPreserveTail(short[] pcm, int targetLength)
+    {
+        targetLength = Math.Max(1, targetLength);
+        if (targetLength == pcm.Length)
+        {
+            return pcm;
+        }
+
+        var adjusted = new short[targetLength];
+        var copyLength = Math.Min(pcm.Length, targetLength);
+        if (copyLength > 0)
+        {
+            Buffer.BlockCopy(pcm, 0, adjusted, 0, copyLength * sizeof(short));
+        }
+
+        if (copyLength < targetLength)
+        {
+            var fillValue = copyLength > 0 ? adjusted[copyLength - 1] : (short)0;
+            Array.Fill(adjusted, fillValue, copyLength, targetLength - copyLength);
+        }
+
+        return adjusted;
+    }
+
+    private static double MeasureLoopContinuityErrorWithClamp(short[] pcm, int loopStart, int loopEnd, int loopLength)
+    {
+        if (pcm.Length == 0 || loopStart < 0 || loopLength <= 0)
+        {
+            return double.MaxValue;
+        }
+
+        var window = Math.Min(LoopContinuityWindowSamples, loopLength);
+        if (window <= 0)
+        {
+            return 0.0;
+        }
+
+        double error = 0.0;
+        for (var index = 0; index < window; index++)
+        {
+            var before = GetSampleWithClamp(pcm, loopEnd - window + index);
+            var after = GetSampleWithClamp(pcm, loopStart + index);
+            var delta = (double)before - after;
+            error += delta * delta;
+        }
+
+        return Math.Sqrt(error / window);
+    }
+
+    private static double MeasureLoopSlopeErrorWithClamp(short[] pcm, int loopStart, int loopEnd)
+    {
+        if (pcm.Length < 2)
+        {
+            return 0.0;
+        }
+
+        var beforeA = GetSampleWithClamp(pcm, loopEnd - 2);
+        var beforeB = GetSampleWithClamp(pcm, loopEnd - 1);
+        var afterA = GetSampleWithClamp(pcm, loopStart);
+        var afterB = GetSampleWithClamp(pcm, loopStart + 1);
+        var beforeSlope = beforeB - beforeA;
+        var afterSlope = afterB - afterA;
+        return Math.Abs(beforeSlope - afterSlope);
+    }
+
+    private static bool HasZeroCrossingNearWithClamp(short[] pcm, int sampleIndex)
+    {
+        var start = sampleIndex - 2;
+        var end = sampleIndex + 2;
+        for (var index = start; index <= end; index++)
+        {
+            var left = GetSampleWithClamp(pcm, index - 1);
+            var right = GetSampleWithClamp(pcm, index);
+            if (left == 0 || right == 0 || (left < 0 && right > 0) || (left > 0 && right < 0))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static short GetSampleWithClamp(short[] pcm, int index)
+    {
+        if (pcm.Length == 0)
+        {
+            return 0;
+        }
+
+        if (index < 0)
+        {
+            return pcm[0];
+        }
+
+        if (index >= pcm.Length)
+        {
+            return pcm[^1];
+        }
+
+        return pcm[index];
+    }
+
+    private static int GetSampleWithClamp(int[] pcm, int index)
+    {
+        if (pcm.Length == 0)
+        {
+            return 0;
+        }
+
+        if (index < 0)
+        {
+            return pcm[0];
+        }
+
+        if (index >= pcm.Length)
+        {
+            return pcm[^1];
+        }
+
+        return pcm[index];
+    }
+
+    private static float GetSampleWithClamp(float[] pcm, int index)
+    {
+        if (pcm.Length == 0)
+        {
+            return 0f;
+        }
+
+        if (index < 0)
+        {
+            return pcm[0];
+        }
+
+        if (index >= pcm.Length)
+        {
+            return pcm[^1];
+        }
+
+        return pcm[index];
+    }
+
+    private static double MeasureLoopContinuityError(short[] pcm, int loopStart, int loopEnd)
+    {
+        if (pcm.Length == 0 || loopStart < 0 || loopEnd <= loopStart || loopStart >= pcm.Length)
+        {
+            return 0.0;
+        }
+
+        loopEnd = Math.Clamp(loopEnd, loopStart + 1, pcm.Length);
+        var loopLength = loopEnd - loopStart;
+        var window = Math.Min(LoopContinuityWindowSamples, loopLength);
+        if (window <= 0)
+        {
+            return 0.0;
+        }
+
+        double error = 0.0;
+        for (var index = 0; index < window; index++)
+        {
+            var before = pcm[loopEnd - window + index];
+            var after = pcm[loopStart + index];
+            var delta = (double)before - after;
+            error += delta * delta;
+        }
+
+        return Math.Sqrt(error / window);
+    }
+
+    private static double MeasureLoopContinuityError(float[] pcm, int loopStart, int loopEnd)
+    {
+        if (pcm.Length == 0 || loopStart < 0 || loopEnd <= loopStart || loopStart >= pcm.Length)
+        {
+            return 0.0;
+        }
+
+        loopEnd = Math.Clamp(loopEnd, loopStart + 1, pcm.Length);
+        var loopLength = loopEnd - loopStart;
+        var window = Math.Min(LoopContinuityWindowSamples, loopLength);
+        if (window <= 0)
+        {
+            return 0.0;
+        }
+
+        double error = 0.0;
+        for (var index = 0; index < window; index++)
+        {
+            var before = pcm[loopEnd - window + index] * short.MaxValue;
+            var after = pcm[loopStart + index] * short.MaxValue;
+            var delta = (double)before - after;
+            error += delta * delta;
+        }
+
+        return Math.Sqrt(error / window);
+    }
+
+    private static double MeasureLoopSlopeError(float[] pcm, int loopStart, int loopEnd)
+    {
+        if (pcm.Length < 2 || loopStart < 0 || loopEnd <= loopStart)
+        {
+            return 0.0;
+        }
+
+        loopEnd = Math.Clamp(loopEnd, loopStart + 1, pcm.Length);
+        var beforeA = GetSampleWithClamp(pcm, loopEnd - 2);
+        var beforeB = GetSampleWithClamp(pcm, loopEnd - 1);
+        var afterA = GetSampleWithClamp(pcm, loopStart);
+        var afterB = GetSampleWithClamp(pcm, loopStart + 1);
+        var beforeSlope = beforeB - beforeA;
+        var afterSlope = afterB - afterA;
+        return Math.Abs(beforeSlope - afterSlope) * short.MaxValue;
+    }
+
+    private static double MeasureLoopWrapContinuityError(int[] decoded, int loopEnd, ReadOnlySpan<int> wrappedStart, int window)
+    {
+        if (decoded.Length == 0 || window <= 0 || wrappedStart.Length < window)
+        {
+            return double.MaxValue;
+        }
+
+        double error = 0.0;
+        for (var index = 0; index < window; index++)
+        {
+            var before = GetSampleWithClamp(decoded, loopEnd - window + index);
+            var after = wrappedStart[index];
+            var delta = (double)before - after;
+            error += delta * delta;
+        }
+
+        return Math.Sqrt(error / window);
+    }
+
+    private static double MeasureLoopWrapSlopeError(int[] decoded, int loopEnd, ReadOnlySpan<int> wrappedStart, int window)
+    {
+        if (decoded.Length < 2 || window < 2 || wrappedStart.Length < 2)
+        {
+            return 0.0;
+        }
+
+        var beforeSlope = GetSampleWithClamp(decoded, loopEnd - 1) - GetSampleWithClamp(decoded, loopEnd - 2);
+        var afterSlope = wrappedStart[1] - wrappedStart[0];
+        return Math.Abs(beforeSlope - afterSlope);
+    }
+
+    private static double MeasureLoopWrapStateMismatchError(int[] decoded, int loopStart, ReadOnlySpan<int> wrappedStart, int window)
+    {
+        if (decoded.Length == 0 || loopStart < 0 || loopStart >= decoded.Length || window <= 0 || wrappedStart.Length < window)
+        {
+            return double.MaxValue;
+        }
+
+        double error = 0.0;
+        for (var index = 0; index < window; index++)
+        {
+            var normalStart = GetSampleWithClamp(decoded, loopStart + index);
+            var wrapped = wrappedStart[index];
+            var delta = (double)normalStart - wrapped;
+            error += delta * delta;
+        }
+
+        return Math.Sqrt(error / window);
+    }
+
+    private static bool TryApplyLoopMicroCrossfade(short[] pcm, int loopStart, LoopType loopType, out int crossfadeLength)
+    {
+        crossfadeLength = 0;
+        var loopLength = pcm.Length - loopStart;
+        if (loopStart < 0 || loopStart >= pcm.Length || loopLength < LoopMicroCrossfadeMinSamples * 4)
+        {
+            return false;
+        }
+
+        crossfadeLength = Math.Clamp(loopLength / 16, LoopMicroCrossfadeMinSamples, LoopMicroCrossfadeMaxSamples);
+        if (loopStart + crossfadeLength >= pcm.Length - crossfadeLength)
+        {
+            crossfadeLength = Math.Max(0, (pcm.Length - loopStart) / 4);
+        }
+
+        if (crossfadeLength < LoopMicroCrossfadeMinSamples)
+        {
+            crossfadeLength = 0;
+            return false;
+        }
+
+        var baselineScore = ScorePreparedLoopPcm(pcm, loopStart, loopType);
+        var candidatePcm = (short[])pcm.Clone();
+        var fadeStart = pcm.Length - crossfadeLength;
+        for (var index = 0; index < crossfadeLength; index++)
+        {
+            var source = candidatePcm[fadeStart + index];
+            var target = candidatePcm[loopStart + index];
+            var t = (index + 1) / (double)(crossfadeLength + 1);
+            candidatePcm[fadeStart + index] = (short)Math.Clamp(
+                Math.Round((source * (1.0 - t)) + (target * t), MidpointRounding.AwayFromZero),
+                short.MinValue,
+                short.MaxValue);
+        }
+
+        var candidateScore = ScorePreparedLoopPcm(candidatePcm, loopStart, loopType);
+        if (candidateScore >= baselineScore)
+        {
+            crossfadeLength = 0;
+            return false;
+        }
+
+        Buffer.BlockCopy(candidatePcm, 0, pcm, 0, pcm.Length * sizeof(short));
+        return true;
+    }
+
+    private static bool TryApplyAutoLoopPolyphoneCrossfade(
+        short[] pcm,
+        int loopStart,
+        double loopError,
+        out int crossfadeLength)
+    {
+        crossfadeLength = 0;
+        var loopLength = pcm.Length - loopStart;
+        if (loopStart <= 0 || loopStart >= pcm.Length || loopLength < AutoLoopCrossfadeMinSamples * 2)
+        {
+            return false;
+        }
+
+        var maxLength = Math.Min(AutoLoopCrossfadeMaxSamples, Math.Min(loopStart, loopLength / 2));
+        if (maxLength < AutoLoopCrossfadeMinSamples)
+        {
+            return false;
+        }
+
+        var severity = Math.Clamp(SanitizeMetric(loopError) / 12_000.0, 0.25, 1.0);
+        var desired = (int)Math.Round(AutoLoopCrossfadeMinSamples + ((AutoLoopCrossfadeMaxSamples - AutoLoopCrossfadeMinSamples) * severity), MidpointRounding.AwayFromZero);
+        crossfadeLength = Math.Clamp(desired, AutoLoopCrossfadeMinSamples, maxLength);
+        var fadeStart = pcm.Length - crossfadeLength;
+        var sourceStart = loopStart - crossfadeLength;
+        if (sourceStart < 0)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < crossfadeLength; index++)
+        {
+            var t = crossfadeLength == 1
+                ? 1.0
+                : index / (double)(crossfadeLength - 1);
+            var tail = pcm[fadeStart + index];
+            var preLoop = pcm[sourceStart + index];
+            pcm[fadeStart + index] = (short)Math.Clamp(
+                Math.Round((tail * (1.0 - t)) + (preLoop * t), MidpointRounding.AwayFromZero),
+                short.MinValue,
+                short.MaxValue);
+        }
+
+        return true;
+    }
+
+    private static double ScorePreparedLoopPcm(short[] pcm, int loopStart, LoopType loopType)
+    {
+        var continuity = MeasureLoopContinuityError(pcm, loopStart, pcm.Length);
+        var slope = MeasureLoopSlopeErrorWithClamp(pcm, loopStart, pcm.Length);
+        var decodedScore = MeasureDecodedAdpcmLoopCandidate(pcm, loopStart, loopType);
+        if (!decodedScore.Valid)
+        {
+            return continuity + (slope * 0.12);
+        }
+
+        return decodedScore.ContinuityError +
+            (decodedScore.SlopeError * 0.30) +
+            (decodedScore.StateMismatchError * 0.75) +
+            (continuity * 0.30) +
+            (slope * 0.05);
+    }
+
+    private static bool TryApplyConservativeAutoLoopCrossfade(
+        short[] pcm,
+        int loopStart,
+        double loopError,
+        LoopType loopType,
+        out int crossfadeLength)
+    {
+        crossfadeLength = 0;
+        var baselineScore = ScorePreparedLoopPcm(pcm, loopStart, loopType);
+        var candidatePcm = (short[])pcm.Clone();
+        if (!TryApplyAutoLoopPolyphoneCrossfade(candidatePcm, loopStart, loopError, out var candidateLength))
+        {
+            return false;
+        }
+
+        var candidateScore = ScorePreparedLoopPcm(candidatePcm, loopStart, loopType);
+        if (candidateScore >= baselineScore)
+        {
+            return false;
+        }
+
+        Buffer.BlockCopy(candidatePcm, 0, pcm, 0, pcm.Length * sizeof(short));
+        crossfadeLength = candidateLength;
+        return true;
     }
 
     private static float GetStereoLeftPan(float basePan)
@@ -3457,27 +5515,10 @@ public static class BgmMidiSf2Rebuilder
     }
 
     private static double ComposeRootNote(int rootKey, int fineTuneCents)
-        => rootKey + (fineTuneCents / 100.0);
+        => WdSampleTool.ComposeWdRootNote(rootKey, fineTuneCents);
 
     private static (int RootKey, int FineTuneCents) CanonicalizeRootNote(double rootNote)
-    {
-        var rootKey = (int)Math.Round(rootNote, MidpointRounding.AwayFromZero);
-        var fineTuneCents = (int)Math.Round((rootNote - rootKey) * 100.0, MidpointRounding.AwayFromZero);
-
-        while (fineTuneCents > 50)
-        {
-            rootKey++;
-            fineTuneCents -= 100;
-        }
-
-        while (fineTuneCents < -50)
-        {
-            rootKey--;
-            fineTuneCents += 100;
-        }
-
-        return (rootKey, fineTuneCents);
-    }
+        => WdSampleTool.CanonicalizeWdRootNote(rootNote);
 
     private static void SplitRootNote(double rootNote, out int rootKey, out int fineTuneCents)
     {
@@ -3870,11 +5911,9 @@ public static class BgmMidiSf2Rebuilder
 
     private static void EncodeRootNote(double rootNote, out byte rawFineTune, out byte rawUnityKey)
     {
-        var canonicalPitch = CanonicalizeRootNote(rootNote);
-        var unityKey = canonicalPitch.RootKey;
-        var fineTune = canonicalPitch.FineTuneCents;
-        rawFineTune = WdSampleTool.EncodeWdFineTune(fineTune);
-        rawUnityKey = unchecked((byte)(0x3A - unityKey));
+        var encodedPitch = WdSampleTool.EncodeWdRootNote(rootNote);
+        rawFineTune = encodedPitch.RawFineTune;
+        rawUnityKey = encodedPitch.RawUnityKey;
     }
 
     private static byte EncodeWdPan(float pan)
@@ -3972,6 +6011,7 @@ internal sealed record AuthoredSample(
     byte[] EncodedBytes,
     LoopDescriptor RequestedLoopDescriptor,
     LoopDescriptor EffectiveLoopDescriptor,
+    LoopPreparationDiagnostics LoopDiagnostics,
     SamplePitchComponents PitchComponents)
 {
     public bool RequestedLooping => RequestedLoopDescriptor.Looping;
@@ -4059,6 +6099,7 @@ internal sealed record MidiSf2RegionManifest(
     bool Looping,
     int LoopStartBytes,
     MidiSf2LoopManifest Loop,
+    LoopPreparationDiagnostics LoopAlignment,
     string LoopPolicyReason,
     bool UsedTemplateLoopPolicy,
     string LoopTemplateMatchKind,
@@ -4099,6 +6140,8 @@ internal sealed record MidiSf2PitchManifest(
     double SampleRatePitchOffsetSemitones,
     double LoopAlignmentPitchOffsetSemitones,
     double PitchOffsetSemitones,
+    byte EncodedRawUnityKey,
+    byte EncodedRawFineTune,
     int EncodedUnityKey,
     int EncodedFineTuneCents,
     double EncodedRootNoteSemitones,
@@ -4153,11 +6196,162 @@ internal sealed record MidiSf2LoopManifest(
 
 internal sealed record GeneratedTrack(int Channel, string Name, byte[] Bytes);
 
-internal sealed record PreparedLoopSample(short[] Pcm, LoopDescriptor LoopDescriptor, double PitchOffsetSemitones)
+internal sealed record PreparedLoopSample(
+    short[] Pcm,
+    LoopDescriptor LoopDescriptor,
+    double PitchOffsetSemitones,
+    LoopPreparationDiagnostics LoopDiagnostics)
 {
     public bool Looping => LoopDescriptor.Looping;
 
     public int LoopStartSample => LoopDescriptor.ResolveStartSamples(Pcm.Length);
+}
+
+internal readonly record struct AdpcmEncodeSelection(byte[] EncodedBytes, double ErrorFeedbackScale);
+
+internal readonly record struct PreparedAdpcmSelection(PreparedLoopSample PreparedSample, AdpcmEncodeSelection EncodeSelection);
+
+internal readonly record struct LoopEndContentAlignedInput(short[] Pcm, LoopDescriptor LoopDescriptor, int PrefixSamples);
+
+internal readonly record struct PitchSafeAlignedLoop(short[] Pcm, int AlignedLoopStart);
+
+internal readonly record struct DecodedAdpcmLoopScore(bool Valid, double ContinuityError, double SlopeError, double StateMismatchError)
+{
+    public static DecodedAdpcmLoopScore Invalid { get; } = new(false, double.MaxValue, double.MaxValue, double.MaxValue);
+}
+
+internal sealed record LoopEndSelection(
+    short[] Pcm,
+    int EndSample,
+    IReadOnlyList<LoopEndCandidateDiagnostics> Candidates);
+
+internal sealed record AutoLoopCandidateEvaluation(
+    int StartSample,
+    int EndSample,
+    int LengthSamples,
+    double Score,
+    double ContinuityError,
+    double SlopeError,
+    double DecodedAdpcmContinuityError,
+    double DecodedAdpcmSlopeError,
+    double DecodedAdpcmStateMismatchError)
+{
+    public static AutoLoopCandidateEvaluation Invalid { get; } = new(
+        StartSample: 0,
+        EndSample: 0,
+        LengthSamples: 0,
+        Score: double.MaxValue,
+        ContinuityError: double.MaxValue,
+        SlopeError: double.MaxValue,
+        DecodedAdpcmContinuityError: double.MaxValue,
+        DecodedAdpcmSlopeError: double.MaxValue,
+        DecodedAdpcmStateMismatchError: double.MaxValue);
+
+    public LoopEndCandidateDiagnostics ToDiagnostics(int originalLoopEnd)
+        => new(
+            Strategy: "auto-loop",
+            Selected: true,
+            EndSample,
+            EndShiftSamples: EndSample - originalLoopEnd,
+            LengthSamples,
+            Score,
+            ContinuityError,
+            SlopeError,
+            DecodedAdpcmContinuityError,
+            DecodedAdpcmSlopeError,
+            DecodedAdpcmStateMismatchError);
+}
+
+internal sealed record LoopEndCandidateEvaluation(
+    short[] Pcm,
+    string Strategy,
+    int EndSample,
+    int EndShiftSamples,
+    int LengthSamples,
+    double Score,
+    double ContinuityError,
+    double SlopeError,
+    double DecodedAdpcmContinuityError,
+    double DecodedAdpcmSlopeError,
+    double DecodedAdpcmStateMismatchError)
+{
+    public LoopEndCandidateDiagnostics ToDiagnostics(bool selected)
+        => new(
+            Strategy,
+            selected,
+            EndSample,
+            EndShiftSamples,
+            LengthSamples,
+            Score,
+            ContinuityError,
+            SlopeError,
+            DecodedAdpcmContinuityError,
+            DecodedAdpcmSlopeError,
+            DecodedAdpcmStateMismatchError);
+}
+
+internal sealed record LoopEndCandidateDiagnostics(
+    string Strategy,
+    bool Selected,
+    int EndSample,
+    int EndShiftSamples,
+    int LengthSamples,
+    double Score,
+    double ContinuityError,
+    double SlopeError,
+    double DecodedAdpcmContinuityError,
+    double DecodedAdpcmSlopeError,
+    double DecodedAdpcmStateMismatchError);
+
+internal sealed record LoopPreparationDiagnostics(
+    bool Looping,
+    int OriginalStartSample,
+    int OriginalEndSample,
+    int OriginalLengthSamples,
+    int AlignedStartSample,
+    int AlignedEndSample,
+    int AlignedLengthSamples,
+    int StartShiftSamples,
+    int LoopStartContentShiftSamples,
+    int LoopEndContentPrefixSamples,
+    int EndShiftSamples,
+    int TailPaddingSamples,
+    IReadOnlyList<LoopEndCandidateDiagnostics> LoopEndCandidates,
+    double ContinuityErrorBefore,
+    double ContinuityErrorAfter,
+    bool CrossfadeEnabled,
+    bool CrossfadeApplied,
+    bool CrossfadeAutoFallback,
+    int CrossfadeLengthSamples,
+    double AdpcmErrorFeedbackScale,
+    double DecodedAdpcmContinuityErrorAfter,
+    double DecodedAdpcmSlopeErrorAfter,
+    double DecodedAdpcmStateMismatchErrorAfter)
+{
+    public static LoopPreparationDiagnostics None { get; } = new(
+        Looping: false,
+        OriginalStartSample: 0,
+        OriginalEndSample: 0,
+        OriginalLengthSamples: 0,
+        AlignedStartSample: 0,
+        AlignedEndSample: 0,
+        AlignedLengthSamples: 0,
+        StartShiftSamples: 0,
+        LoopStartContentShiftSamples: 0,
+        LoopEndContentPrefixSamples: 0,
+        EndShiftSamples: 0,
+        TailPaddingSamples: 0,
+        LoopEndCandidates: [],
+        ContinuityErrorBefore: 0.0,
+        ContinuityErrorAfter: 0.0,
+        CrossfadeEnabled: false,
+        CrossfadeApplied: false,
+        CrossfadeAutoFallback: false,
+        CrossfadeLengthSamples: 0,
+        AdpcmErrorFeedbackScale: PsxAdpcmEncoder.DefaultErrorFeedbackScale,
+        DecodedAdpcmContinuityErrorAfter: 0.0,
+        DecodedAdpcmSlopeErrorAfter: 0.0,
+        DecodedAdpcmStateMismatchErrorAfter: 0.0);
 }
 
 internal sealed record PitchTarget(byte Program, int Key);
@@ -4208,9 +6402,23 @@ internal sealed record MidiSf2Config(
     double Sf2PreEqStrength,
     double Sf2PreLowPassHz,
     bool Sf2AutoLowPass,
+    MidiSf2LoopPolicy Sf2LoopPolicy,
+    bool Sf2LoopMicroCrossfade,
+    bool Sf2LoopTailWrapFill,
+    bool Sf2LoopStartContentAlign,
+    bool Sf2LoopEndContentAlign,
     bool MidiPitchBendWorkaround,
     MidiProgramCompactionMode MidiProgramCompaction,
     MidiSf2AdsrMode AdsrMode);
+
+internal enum MidiSf2LoopPolicy
+{
+    Safe,
+    Advanced,
+    AutoLoop,
+    AdvancedAutoLoop,
+}
+
 internal enum Sf2BankMode
 {
     Used,

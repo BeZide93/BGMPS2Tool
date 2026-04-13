@@ -1,6 +1,6 @@
 # BGMPS2Tool
 
-Version: `v0.9.2`
+Version: `v0.9.22`
 
 <picture>
  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/BeZide93/BGMPS2Tool/blob/main/Icon.png">
@@ -40,6 +40,10 @@ Current hard caps:
 The MIDI/BGM rebuild path now also trims per-track padding aggressively. The tool still writes the track-size table and, for looped builds, preserves the original KH2 track-slot structure, but it no longer pads every track back up to the original template slot length if those bytes are unused.
 
 Short-loop handling on tricky MIDI/SF2 material has also been re-balanced again so the current loop/pitch behavior stays much closer to the good `v0.6.67` sound on tracks like `152`, while still keeping the newer ADSR controls and diagnostics.
+
+MIDI/SF2 loop preparation is now selectable through `sf2_loop_policy` in `config.ini` and the GUI config dropdown. The default is `safe`, which uses the patched `v0.9.2` loop path with deterministic pitch compensation. `advanced` keeps the recent decoded-ADPCM loop scoring experiments available for A/B tests, `auto-loop` ignores imported SF2 loop points for looped samples and searches new WD-friendly 28-sample-aligned loop points from the end of the sample, and `advanced-auto-loop` searches new 28-sample loop points near the original SF2 loop window.
+
+In `advanced` mode, looped non-percussion MIDI/SF2 samples can also use an adaptive PSX-ADPCM encode check: the tool tests the normal feedback path plus reduced-feedback tonal-loop candidates, then keeps the candidate with the best decoded loop-wrap score. One-shots, percussion-bank samples, and the default `safe` loop path stay on the default encoder path, and the chosen feedback scale is written into each loop diagnostic manifest entry.
 
 The MIDI/SF2 pitch path now also keeps a single canonical `UnityKey/FineTune` representation internally, so tiny residual pitch offsets are less likely to cause unnecessary retuning on random instruments.
 
@@ -89,6 +93,17 @@ The `v0.9.2` rebuild path fixes GM drum-channel handling:
 - MIDI channel 10, internally `channel == 9`, now resolves bank-0 program notes through SoundFont percussion bank `128` when available
 - this keeps GM-style drum parts such as `128/0` key `39` clap from being authored as melodic `0/0 Piano`
 - MIDI/SF2 source preview and WD authoring now use the same percussion preset decision
+
+The `v0.9.4` rebuild path keeps the safe `v0.9.2` loop sound by default while retaining the useful diagnostics from the loop-alignment experiment:
+
+- default MIDI/SF2 loop preparation is back on the conservative `v0.9.2` behavior after the experimental 28-sample start/end search proved too risky for some material
+- loop diagnostics are still written into the MIDI/SF2 manifest, including original/effective loop points, start/end shifts, before/after continuity error, and micro-crossfade status
+- `sf2_loop_micro_crossfade=1` remains available as a disabled-by-default test option for difficult loop clicks, but the packaged default is `0`
+- as of `v0.9.19`, that optional micro-crossfade path first tests a copied PCM candidate and only keeps it when the decoded PSX-ADPCM loop-wrap score improves, so enabling the switch no longer blindly rewrites loop tails
+- as of `v0.9.20`, `sf2_loop_tail_wrap_fill=1` can fill a looped sample's final partial 28-sample ADPCM frame from the loop start instead of leaving that partial tail as encoder zero-padding
+- as of `v0.9.21`, `sf2_loop_start_content_align=1` is the new safe-mode default; it keeps the WD loop-start block aligned but moves the actual SF2 loop body content onto that block so playback does not repeatedly jump back into earlier pre-loop waveform material
+- as of `v0.9.22`, `sf2_loop_end_content_align=1` can prepend a tiny silent prefix so the original SF2 loop end lands on a 28-sample WD block, and `sf2_loop_policy=advanced-auto-loop` searches auto-loop candidates closest to the original SF2 loop window
+- WD pitch writing uses the shared Square/WD fine-tune table path consistently and exposes raw WD pitch bytes plus quantization error in the manifest
 
 ## Included Files
 

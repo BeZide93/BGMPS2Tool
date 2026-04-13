@@ -1,104 +1,120 @@
-PC Number	PlayStation2 Name	Description	Loop	Full Loop
-50	Dive Into The Heart -Destati-	Dive Into The Heart Field	Yes	No
-51	Fragments Of Sorrow	Dive Into The Heart Battle	Yes	No
-52	The Afternoon Street	Twilight Town Field	Yes	No
-53	Working Together (Twilight Town)	Twilight Town Battle	Yes	No
-54	Sacred Moon	The World That Never Was Field	Yes	No
-55	Deep Drive	The World That Never Was Battle	Yes	No
-59	A Fight To The Death	Boss	Yes	No
-60	Darkness Of The Unknown (Part 1)	Boss	Yes	No
-61	Darkness Of The Unknown (Part 2)	Boss	Yes	No
-62	Darkness Of The Unknown (Part 3)	Boss	Yes	No
-63	The 13th Reflection	Boss	Yes	No
-64	What A Surprise	Christmas Town Field	Yes	No
-65	Happy Holidays	Christmas Town Battle	Yes	No
-66	The Other Promise	Boss	Yes	No
-67	Rage Awakened	Boss	Yes	No
-68	Cavern Of Remembrance	Cavern Of Remembrance Field	Yes	No
-69	Deep Anxiety	Cavern Of Remembrance Battle	Yes	No
-81	Beneath the Ground (Variation B)	Underworld Cups	Yes	No
-82	The Escapade	Minigame	Yes	No
-84	Arabian Daydream	Carpet Minigame	Yes	No
-85	Byte Striking	Light Cycle	Yes	No
-86	Spooks Of Halloween Town	Halloween Town Battle	Yes	No
-87	Dissapeared	Boss	Yes	No
-88	Sora	Cutscene	Yes	No
-89	Friends In My Heart	Cutscene	Yes	No
-90	Riku	Cutscene	Yes	No
-91	Kairi	Cutscene	Yes	No
-92	A Walk In Adante	Cutscene	Yes	No
-93	Villains Of A Sort	Cutscene	Yes	No
-94	Organization XIII	Cutscene	Yes	No
-95	Apprehension	Cutscene	Yes	No
-96	Courage	Cutscene	Yes	No
-97	Laughter and Merriment	Cutscene	Yes	No
-98	Hesitation	Cutscene	Yes	No
-99	Missing You	Cutscene	Yes	No
-100	The Underworld	Underworld Field	Yes	No
-101	Waltz Of The Damned	Beast Castle Field	Yes	No
-102	What Lies Beneath	Underworld Battle	Yes	No
-103	Olympus Coliseum	Olympus Coliseum Field	Yes	No
-104	Dance Of The Daring	Beast Castle Battle	Yes	No
-106	Under The Sea (Japanese)	Atlantica Minigame	No	No
-107	Ursula Revenge (Japanese)	Atlantica Minigame	No	No
-108	Part Of Your World (Japanese)	Atlantica Minigame	No	No
-109	A New Day Is Dawning (Japanese)	Atlantica Minigame	No	No
-110	The Encounter	Event Battle/Boss	Yes	No
-111	Sinister Shadows	Event Battle/Boss	Yes	No
-112	Fields of Honor	Land of Dragons Battle	Yes	No
-113	Swim This Way (Japanese)	Atlantica Minigame	No	No
-114	Tension Rising	Event Battle/Boss	Yes	No
-115	The Corrupted	Event Battle/Boss	Yes	No
-116	The Home Of Dragons	Land of Dragons Field	Yes	No
-117	Rowdy Rumble	Event Battle/Boss	Yes	No
-118	Lazy Afternoons	Twilight Town Field (Roxas)	Yes	No
-119	Sinister Sundown	Twilight Town Battle (Roxas)	Yes	No
-120	Beneath the Ground (Variation A)	Underworld Cups	Yes	No
-121	Desire for All That Lost	Event Battle/Boss	Yes	No
-122	Lets Sing And Dance (Part B)	Atlantica Minigame	Yes	No
-123	Lets Sing And Dance (Part B)	Atlantica Minigame	Yes	No
-124	Lets Sing And Dance (Part A)	Atlantica Minigame	No	No
-125	Lets Sing And Dance (Part C)	Atlantica Minigame	No	No
-127	A Day in Agrabah	Agrabah Field	Yes	No
-128	Arabian Dream 	Agrabah Battle	Yes	No
-129	Isn't It Lovely	Atlantica Field	Yes	No
-130	Lets Sing And Dance (PS2 Album Version)	Atlantica Minigame	No	No
-131	Dance to the Death	Event Battle/Boss	Yes	No
-132	Beauty and the Beast	Cutscene	No	No
-133	Magical Mystery	Mysterious Tower Field	Yes	No
-134	Working Together (Mysterious Tower)	Mysterious Tower Battle	Yes	No
-135	Space Paranoids	Space Paranoids Field	Yes	No
-136	Byte Bashing	Space Paranoids Battle	Yes	No
-137	A Twinkle in the Sky	World Map	Yes	No
-138	Shipmeisters Shanty	Gummi Hangar	Yes	No
-139	Gearing Up	Gummi Hangar	Yes	No
-141	Winnie The Pooh	100 Acre Wood Field	Yes	No
-142	Crossing the Finish Line	Gummi Ship	Yes	No
-143	Mickey Mouse Club March	Disney Castle Field	Yes	No
-144	This Is Halloween	Halloween Town Field	Yes	No
-145	Vim and Vigor	Event Battle/Boss	Yes	No
-146	Roxas	Cutscene	Yes	No
-148	Blast Off!	Gummi Hangar	Yes	No
-149	Spooks Of Halloween Town	Halloween Town Battle	Yes	No
-151	The 13th Struggle	Event Battle/Boss	Yes	No
-152	Reviving Hollow Bastion	Hollow Bastion Field	Yes	No
-153	Scherzo Di Notte	Hollow Bastion Battle	Yes	No
-154	Nights Of The Cursed	Port Royal Field	Yes	No
-155	He Is A Pirate (No Intro)	Port Royal Battle	Yes	No
-158	Bounce-O-Rama	100 Acre Wood Minigame	Yes	No
-159	Bounce-O-Rama (Speed Up Version)	100 Acre Wood Minigame	Yes	No
-164	Road To Hero	Olympus Coliseum Minigame	Yes	No
-185	The 13th Dilemma	Boss	Yes	No
-186	Adventures In The Savannah	Pride Lands Field	Yes	No
-187	Savannah Pride	Pride Lands Battle	Yes	No
-188	One Winged Angel	Boss	Yes	No
-189	Monochrome Dreams	Timeless River Field	Yes	No
-190	Old Friends, Old Rivals	Timeless River Battle	Yes	No
-506	Under The Sea	Atlantica Minigame	No	No
-507	Ursula Revenge	Atlantica Minigame	No	No
-508	Part Of Your World	Atlantica Minigame	No	No
-509	A New Day Is Dawning	Atlantica Minigame	No	No
-513	Swim This Way	Atlantica Minigame	No	No
-517	Rowdy Rumble (Timeless River)	Timeless River Boss	Yes	No
-521	Desire For All That Lost (Timeless River)	Timeless River Boss	Yes	No
-530	He Is A Pirate (Full)	Port Royal Battle	Yes	No
+BGM ID	WD ID	PlayStation2 Name	Description	Loop
+10	N/A	Oopsy-Daisy (UNUSED)	Cutscene (KH1)	No
+11	N/A	Destati A (UNUSED)	Dive to the Heart Field/Battle (KH1)	Yes
+12	N/A	Destati B (UNUSED)	Dive to the Heart Field/Battle (KH1)	Yes
+13	N/A	Destati C (UNUSED)	Dive to the Heart Field/Battle (KH1)	Yes
+14	N/A	Destati D (UNUSED)	Dive to the Heart Field/Battle (KH1)	Yes
+15	N/A	Destati E (UNUSED)	Dive to the Heart Field/Battle (KH1)	Yes
+16	N/A	Destati F (UNUSED)	Dive to the Heart Field/Battle (KH1)	Yes
+17	N/A	Destati G (UNUSED)	Dive to the Heart Field/Battle (KH1)	Yes
+18	N/A	Destati H (UNUSED)	Dive to the Heart Field/Battle (KH1)	Yes
+19	N/A	Destati I (UNUSED)	Dive to the Heart Field/Battle (KH1)	No
+50	50	Dive Into The Heart -Destati-	Dive Into The Heart Field	Yes
+51	50	Fragments Of Sorrow	Dive Into The Heart Battle	Yes
+52	52	The Afternoon Street	Twilight Town Field	Yes
+53	52	Working Together (Twilight Town)	Twilight Town Battle	Yes
+54	54	Sacred Moon	The World That Never Was Field	Yes
+55	54	Deep Drive	The World That Never Was Battle	Yes
+56	56	Nights Of The Cursed (UNUSED)	Port Royal Field	Yes
+57	56	He Is A Pirate (UNUSED)	Port Royal Battle	Yes
+59	59	A Fight To The Death	Boss	Yes
+60	60	Darkness Of The Unknown (Part 1)	Boss	Yes
+61	60	Darkness Of The Unknown (Part 2)	Boss	Yes
+62	60	Darkness Of The Unknown (Part 3)	Boss	Yes
+63	63	The 13th Reflection	Boss	Yes
+64	64	What A Surprise	Christmas Town Field	Yes
+65	64	Happy Holidays	Christmas Town Battle	Yes
+66	66	The Other Promise	Boss	Yes
+67	67	Rage Awakened	Boss	Yes
+68	68	Cavern Of Remembrance	Cavern Of Remembrance Field	Yes
+69	68	Deep Anxiety	Cavern Of Remembrance Battle	Yes
+81	81	Beneath the Ground (Variation B)	Underworld Cups	Yes
+82	82	The Escapade	Minigame	Yes
+84	84	Arabian Daydream	Carpet Minigame	Yes
+85	85	Byte Striking	Light Cycle	Yes
+87	87	Dissapeared	Boss	Yes
+88	88	Sora	Cutscene	Yes
+89	89	Friends In My Heart	Cutscene	Yes
+90	90	Riku	Cutscene	Yes
+91	91	Kairi	Cutscene	Yes
+92	92	A Walk In Adante	Cutscene	Yes
+93	93	Villains Of A Sort	Cutscene	Yes
+94	94	Organization XIII	Cutscene	Yes
+95	95	Apprehension	Cutscene	Yes
+96	96	Courage	Cutscene	Yes
+97	97	Laughter and Merriment	Cutscene	Yes
+98	98	Hesitation	Cutscene	Yes
+99	99	Missing You	Cutscene	Yes
+100	100	The Underworld	Underworld Field	Yes
+101	101	Waltz Of The Damned	Beast Castle Field	Yes
+102	100	What Lies Beneath	Underworld Battle	Yes
+103	103	Olympus Coliseum	Olympus Coliseum Field	Yes
+104	101	Dance Of The Daring	Beast Castle Battle	Yes
+106	106	Under The Sea	Atlantica Minigame	No
+107	107	Ursula Revenge	Atlantica Minigame	No
+108	108	Part Of Your World	Atlantica Minigame	No
+109	109	A New Day Is Dawning	Atlantica Minigame	No
+110	110	The Encounter	Event Battle/Boss	Yes
+111	111	Sinister Shadows	Event Battle/Boss	Yes
+112	116	Fields of Honor	Land of Dragons Battle	Yes
+113	113	Swim This Way	Atlantica Minigame	No
+114	114	Tension Rising	Event Battle/Boss	Yes
+115	115	The Corrupted	Event Battle/Boss	Yes
+116	116	The Home Of Dragons	Land of Dragons Field	Yes
+117	117	Rowdy Rumble	Event Battle/Boss	Yes
+118	118	Lazy Afternoons	Twilight Town Field (Roxas)	Yes
+119	118	Sinister Sundown	Twilight Town Battle (Roxas)	Yes
+120	120	Beneath the Ground (Variation A)	Underworld Cups	Yes
+121	121	Desire for All That Lost	Event Battle/Boss	Yes
+122	122	Lets Sing And Dance (Part A)	Atlantica Minigame	Yes
+123	122	Lets Sing And Dance (Part B)	Atlantica Minigame	Yes
+124	122	Lets Sing And Dance (Part C)	Atlantica Minigame	Yes
+125	122	Lets Sing And Dance (Part D)	Atlantica Minigame	Yes
+127	127	A Day in Agrabah	Agrabah Field	Yes
+128	127	Arabian Dream 	Agrabah Battle	Yes
+129	129	Isn't It Lovely	Atlantica Field	Yes
+130	130	Never Land Sky (UNUSED)	Neverland Clocktower Field (KH1)	Yes
+131	131	Dance to the Death	Event Battle/Boss	Yes
+132	132	Beauty and the Beast	Cutscene	No
+133	133	Magical Mystery	Mysterious Tower Field	Yes
+134	133	Working Together (Mysterious Tower)	Mysterious Tower Battle	Yes
+135	135	Space Paranoids	Space Paranoids Field	Yes
+136	135	Byte Bashing	Space Paranoids Battle	Yes
+137	137	A Twinkle in the Sky	World Map	Yes
+138	138	Shipmeisters Shanty	Gummi Hangar	Yes
+139	138	Gearing Up	Gummi Hangar	Yes
+140	140	Under The Sea (UNUSED)	Atlantica Field (KH1)	Yes
+141	141	Winnie The Pooh	100 Acre Wood Field	Yes
+142	142	Crossing the Finish Line	Gummi Ship	Yes
+143	143	Mickey Mouse Club March	Disney Castle Field	Yes
+144	144	This Is Halloween	Halloween Town Field	Yes
+145	145	Vim and Vigor	Event Battle/Boss	Yes
+146	146	Roxas	Cutscene	Yes
+147	147	An Adventure in Atlantica (UNUSED)	Atlantica Battle (KH1)	Yes
+148	148	Blast Off!	Gummi Hangar	Yes
+149	144	Spooks Of Halloween Town	Halloween Town Battle	Yes
+150	150	Squirming Evil (UNUSED)	Event Battle/Boss (KH1)	Yes
+151	151	The 13th Struggle	Event Battle/Boss	Yes
+152	152	Reviving Hollow Bastion	Hollow Bastion Field	Yes
+153	152	Scherzo Di Notte	Hollow Bastion Battle	Yes
+154	154	Nights Of The Cursed	Port Royal Field	Yes
+155	154	He Is A Pirate	Port Royal Battle	Yes
+156	156	Guardand Nel Buio (UNUSED)	Event Battle/Boss (KH1)	Yes
+158	158	Bounce-O-Rama	100 Acre Wood Minigame	Yes
+159	159	Bounce-O-Rama (Speed Up Version)	100 Acre Wood Minigame	Yes
+162	163	Villains Of A Sort A (UNUSED)	Cutscene (KH1)	No
+163	163	Villains Of A Sort B (UNUSED)	Cutscene (KH1)	Yes
+164	164	Road To Hero	Olympus Coliseum Minigame	Yes
+166	166	Villains Of A Sort C (UNUSED)	Cutscene (KH1)	No
+167	166	Villains Of A Sort D (UNUSED)	Cutscene (KH1)	No
+168	166	Villains Of A Sort E (UNUSED)	Cutscene (KH1)	Yes
+169	166	Villains Of A Sort F (UNUSED)	Cutscene (KH1)	No
+175	175	Villains Of A Sort G (UNUSED)	Cutscene (KH1)	No
+185	185	The 13th Dilemma	Boss	Yes
+186	186	Adventures In The Savannah	Pride Lands Field	Yes
+187	186	Savannah Pride	Pride Lands Battle	Yes
+188	188	One Winged Angel	Boss	Yes
+189	189	Monochrome Dreams	Timeless River Field	Yes
+190	189	Old Friends, Old Rivals	Timeless River Battle	Yes
+200	N/A	Oopsy-Daisy (UNUSED)	Cutscene (KH1)	No
+299	N/A	Daughter of Madain Sari (UNUSED)	(FF9)	Yes
